@@ -1,1 +1,34 @@
-spring.application.name=web-backup
+server:
+  port: 8080  # 服务端口
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/wbe?useSSL=false&serverTimezone=UTC
+    username: root
+    password:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+
+mail:
+  host: smtp.126.com
+  port: 465
+  username: lc1825655243@126.com        # ← 你的完整网易邮箱地址
+  password: SUtXyhkx5bbfqjbv           # ← 这里填**授权码**（不是登录密码！）
+  default-encoding: UTF-8
+  properties:
+    mail:
+      debug: false                     # 调试时可以改为 true
+      smtp:
+        auth: true
+        starttls:
+          enable: false                # 使用 SSL 时关闭 starttls
+        ssl:
+          enable: true
+          required: true
+
+logging:
+  level:
+    com.licong.webbackup: debug  # 项目包名日志级别
