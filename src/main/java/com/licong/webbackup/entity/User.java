@@ -13,6 +13,10 @@ public class User {
     private String passwordHash;
     private String fullName;
     private String role;
+    private Boolean canUpload;
+    private Boolean canReviewUploads;
+    private Boolean canSyncData;
+    private Boolean canDownload;
     private Boolean isActive;
     private LocalDateTime lastLogin;
     private LocalDateTime createdAt;

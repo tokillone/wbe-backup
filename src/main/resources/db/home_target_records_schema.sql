@@ -1,0 +1,19 @@
+CREATE TABLE IF NOT EXISTS home_target_records (
+    record_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    literature_id VARCHAR(50) NOT NULL COMMENT '文献编号',
+    doi VARCHAR(200) NOT NULL COMMENT 'DOI',
+    target_category VARCHAR(100) NOT NULL COMMENT '目标类别',
+    target_group VARCHAR(20) NOT NULL COMMENT '首页目标组: drug/consumer',
+    substance_category VARCHAR(100) NOT NULL COMMENT '目标物质类别',
+    substance_subclass VARCHAR(100) NOT NULL COMMENT '目标物质子类',
+    biomarker_name VARCHAR(300) NOT NULL COMMENT '生物标记物名称',
+    source_sheet VARCHAR(64) NOT NULL DEFAULT '数据表',
+    source_row_number INT NOT NULL COMMENT 'Excel 原始行号',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_home_target_source_row (source_sheet, source_row_number),
+    INDEX idx_home_target_group_category (target_group, substance_category),
+    INDEX idx_home_target_category (substance_category),
+    INDEX idx_home_target_subclass (substance_category, substance_subclass),
+    INDEX idx_home_target_biomarker (substance_category, substance_subclass, biomarker_name),
+    INDEX idx_home_target_doi (doi)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='首页目标物质研究图逐行事实表';

@@ -1,0 +1,218 @@
+package com.licong.webbackup.mapper;
+
+import com.licong.webbackup.dto.map.MapFilterRow;
+import com.licong.webbackup.dto.map.MapRegionStatResponse;
+import com.licong.webbackup.dto.map.MapSourceRecordResponse;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+
+import java.util.List;
+
+@Mapper
+public interface MapVisualizationMapper {
+
+    @Select("""
+            SELECT
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label
+            FROM map_pndl_stats
+            WHERE is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+            GROUP BY
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label
+            ORDER BY
+              MAX(CASE WHEN level = 'city' THEN 1 ELSE 0 END) DESC,
+              MAX(CASE WHEN level = 'city' THEN city_count ELSE 0 END) DESC,
+              SUM(CASE WHEN level = 'city' THEN record_count ELSE 0 END) DESC,
+              category ASC,
+              CASE WHEN subcategory = '全部小类' THEN 0 ELSE 1 END,
+              subcategory ASC,
+              CASE WHEN biomarker_key = 'ALL' THEN 0 ELSE 1 END,
+              biomarker_label ASC,
+              CASE WHEN year_label = '全部年份' THEN 0 ELSE 1 END,
+              year_label ASC
+            """)
+    List<MapFilterRow> findFilterRows();
+
+    @Select("""
+            <script>
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE category = #{category}
+              AND subcategory = #{subcategory}
+              AND biomarker_key = #{biomarkerKey}
+              AND year_label = #{year}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+              <if test="levels != null and levels.size() &gt; 0">
+                AND level IN
+                <foreach item="level" collection="levels" open="(" separator="," close=")">
+                  #{level}
+                </foreach>
+              </if>
+            ORDER BY
+              FIELD(level, 'country', 'admin1', 'city'),
+              pndl_geomean_mg_d_1000inh DESC,
+              display_name ASC
+            </script>
+            """)
+    List<MapRegionStatResponse> findStats(@Param("category") String category,
+                                           @Param("subcategory") String subcategory,
+                                           @Param("biomarkerKey") String biomarkerKey,
+                                           @Param("year") String year,
+                                           @Param("levels") List<String> levels);
+
+    @Select("""
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE level = #{level}
+              AND geo_key = #{geoKey}
+              AND category = #{category}
+              AND subcategory = #{subcategory}
+              AND biomarker_key = #{biomarkerKey}
+              AND year_label = #{year}
+            LIMIT 1
+            """)
+    MapRegionStatResponse findRegion(@Param("level") String level,
+                                      @Param("geoKey") String geoKey,
+                                      @Param("category") String category,
+                                      @Param("subcategory") String subcategory,
+                                      @Param("biomarkerKey") String biomarkerKey,
+                                      @Param("year") String year);
+
+    @Select("""
+            <script>
+            SELECT
+              m.measurement_id,
+              c.drug_name,
+              COALESCE(NULLIF(TRIM(c.biomarker_name), ''), c.drug_name) AS biomarker_name,
+              c.biomarker_cas,
+              c.doi,
+              wp.country,
+              wp.province,
+              wp.city,
+              wp.plant_name,
+              COALESCE(NULLIF(TRIM(se.sampling_start_ym), ''), DATE_FORMAT(se.sample_collection_time, '%Y-%m')) AS sample_period,
+              se.source_workbook,
+              se.original_row_number,
+              CASE
+                WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
+                  ('mg/day/1000 inh', 'mg/day/1000inh', 'mg/d/1000 inh', 'mg/d/1000inh',
+                   'mg/day/1000 people', 'mg/d/1000 people', 'mg/1000p/day', 'mg/1000 inh/day',
+                   'mg/day/1000 inhabitants')
+                  THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value)
+                WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
+                  ('g/day/1000 inh', 'g/day/1000inh', 'g/day/1000 people', 'g/d/1000 people',
+                   'g/day/1000 inhabitants')
+                  THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value) * 1000
+                ELSE NULL
+              END AS pndl_mg_d_1000inh,
+              CASE
+                WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL'
+                WHEN m.pndl_value IS NOT NULL THEN 'PNDL'
+                WHEN m.pndl_estimated_value IS NOT NULL THEN 'PNDL估算'
+                ELSE NULL
+              END AS pndl_source
+            FROM measurements m
+            JOIN compounds c ON c.compound_id = m.compound_id
+            JOIN sampling_events se ON se.event_id = m.event_id
+            JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+            JOIN geo_locations gl ON gl.level = #{level}
+              AND gl.geo_key = #{geoKey}
+              AND (
+                (#{level} = 'country'
+                  AND (LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
+                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.country), ' ', '_'), '-', '_'), '.', '')) = gl.geo_key))
+                OR (#{level} = 'admin1'
+                  AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
+                  AND (LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province))
+                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.province), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
+                OR (#{level} = 'city'
+                  AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
+                  AND (LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city))
+                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.city), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
+              )
+            WHERE TRIM(c.substance_category) = #{category}
+              AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL'
+                OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
+              AND (#{year} = '全部年份'
+                OR COALESCE(
+                  CASE WHEN LEFT(TRIM(se.sampling_start_ym), 4) REGEXP '^[0-9]{4}$' THEN LEFT(TRIM(se.sampling_start_ym), 4) END,
+                  CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
+                  '未标注年份'
+                ) = #{year})
+            HAVING pndl_mg_d_1000inh IS NOT NULL
+              AND pndl_mg_d_1000inh &gt; 0
+            ORDER BY pndl_mg_d_1000inh DESC, m.measurement_id ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MapSourceRecordResponse> findSourceRecords(@Param("level") String level,
+                                                    @Param("geoKey") String geoKey,
+                                                    @Param("category") String category,
+                                                    @Param("subcategory") String subcategory,
+                                                    @Param("biomarkerKey") String biomarkerKey,
+                                                    @Param("year") String year,
+                                                    @Param("limit") int limit);
+}

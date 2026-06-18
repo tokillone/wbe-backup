@@ -1,6 +1,7 @@
 package com.licong.webbackup.controller;
 
 import com.licong.webbackup.common.ApiResponse;
+import com.licong.webbackup.dto.CaptchaResponse;
 import com.licong.webbackup.dto.LoginRequest;
 import com.licong.webbackup.dto.LoginResponse;
 import com.licong.webbackup.dto.RegisterRequest;
@@ -10,6 +11,7 @@ import com.licong.webbackup.dto.UserResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.service.AuthService;
 import com.licong.webbackup.service.AuthTokenService;
+import com.licong.webbackup.service.CaptchaService;
 import com.licong.webbackup.service.VerificationCodeService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -27,13 +29,16 @@ public class AuthController {
     private final AuthService authService;
     private final VerificationCodeService verificationCodeService;
     private final AuthTokenService authTokenService;
+    private final CaptchaService captchaService;
 
     public AuthController(AuthService authService,
                           VerificationCodeService verificationCodeService,
-                          AuthTokenService authTokenService) {
+                          AuthTokenService authTokenService,
+                          CaptchaService captchaService) {
         this.authService = authService;
         this.verificationCodeService = verificationCodeService;
         this.authTokenService = authTokenService;
+        this.captchaService = captchaService;
     }
 
     @PostMapping("/register/send-code")
@@ -52,6 +57,17 @@ public class AuthController {
         String ipAddress = resolveClientIp(servletRequest);
         String userAgent = servletRequest.getHeader("User-Agent");
         return ApiResponse.success("登录成功", authService.login(request, ipAddress, userAgent));
+    }
+
+    @GetMapping("/captcha")
+    public ApiResponse<CaptchaResponse> captcha() {
+        return ApiResponse.success(captchaService.createCaptcha());
+    }
+
+    @PostMapping("/logout")
+    public ApiResponse<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        authTokenService.revokeToken(resolveBearerToken(authorization));
+        return ApiResponse.success("已退出登录", null);
     }
 
     @PostMapping("/password/forgot/send-code")

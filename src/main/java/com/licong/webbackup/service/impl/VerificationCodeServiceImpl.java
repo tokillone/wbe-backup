@@ -25,11 +25,16 @@ public class VerificationCodeServiceImpl implements VerificationCodeService {
     private final JavaMailSender mailSender;
     private final MailProperties mailProperties;
     private final UserMapper userMapper;
+    private final AuthRateLimiter authRateLimiter;
 
-    public VerificationCodeServiceImpl(JavaMailSender mailSender, MailProperties mailProperties, UserMapper userMapper) {
+    public VerificationCodeServiceImpl(JavaMailSender mailSender,
+                                       MailProperties mailProperties,
+                                       UserMapper userMapper,
+                                       AuthRateLimiter authRateLimiter) {
         this.mailSender = mailSender;
         this.mailProperties = mailProperties;
         this.userMapper = userMapper;
+        this.authRateLimiter = authRateLimiter;
     }
 
     @Override
@@ -60,8 +65,9 @@ public class VerificationCodeServiceImpl implements VerificationCodeService {
 
     private void sendCode(String email, CodePurpose purpose, String subject) {
         clearExpiredCodes();
+        authRateLimiter.checkCodeSendAllowed(email, purpose.name());
         String code = String.format("%06d", RANDOM.nextInt(1_000_000));
-        codes.put(cacheKey(email, purpose), new VerificationCode(code, LocalDateTime.now().plus(CODE_TTL)));
+        codes.put(cacheKey(email, purpose), new VerificationCode(code, LocalDateTime.now().plus(CODE_TTL), 0));
 
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(mailProperties.getUsername());
@@ -70,6 +76,7 @@ public class VerificationCodeServiceImpl implements VerificationCodeService {
         message.setText("您的验证码是：" + code + "，5分钟内有效。若非本人操作，请忽略本邮件。");
         try {
             mailSender.send(message);
+            authRateLimiter.recordCodeSent(email, purpose.name());
         } catch (MailException ex) {
             codes.remove(cacheKey(email, purpose));
             throw new BusinessException("验证码邮件发送失败，请检查邮箱配置或稍后重试");
@@ -84,6 +91,12 @@ public class VerificationCodeServiceImpl implements VerificationCodeService {
             throw new BusinessException("验证码不存在或已过期");
         }
         if (!cachedCode.code().equals(code)) {
+            int attempts = cachedCode.attempts() + 1;
+            if (attempts >= 5) {
+                codes.remove(key);
+                throw new BusinessException(429, "验证码错误次数过多，请重新获取");
+            }
+            codes.put(key, new VerificationCode(cachedCode.code(), cachedCode.expiresAt(), attempts));
             throw new BusinessException("验证码不正确");
         }
         codes.remove(key);
@@ -103,6 +116,6 @@ public class VerificationCodeServiceImpl implements VerificationCodeService {
         RESET_PASSWORD
     }
 
-    private record VerificationCode(String code, LocalDateTime expiresAt) {
+    private record VerificationCode(String code, LocalDateTime expiresAt, int attempts) {
     }
 }

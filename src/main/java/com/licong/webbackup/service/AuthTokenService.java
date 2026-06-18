@@ -8,5 +8,7 @@ public interface AuthTokenService {
 
     User getUserByToken(String token);
 
+    void revokeToken(String token);
+
     long getExpiresInSeconds();
 }

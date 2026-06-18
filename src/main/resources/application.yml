@@ -13,10 +13,10 @@ mybatis:
     map-underscore-to-camel-case: true
 
 mail:
-  host: smtp.126.com
-  port: 465
-  username: lc1825655243@126.com        # ← 你的完整网易邮箱地址
-  password: SUtXyhkx5bbfqjbv           # ← 这里填**授权码**（不是登录密码！）
+  host: ${MAIL_HOST:smtp.126.com}
+  port: ${MAIL_PORT:465}
+  username: ${MAIL_USERNAME:}
+  password: ${MAIL_PASSWORD:}
   default-encoding: UTF-8
   properties:
     mail:

@@ -50,6 +50,14 @@ public class AuthTokenServiceImpl implements AuthTokenService {
     }
 
     @Override
+    public void revokeToken(String token) {
+        if (token == null || token.isBlank()) {
+            return;
+        }
+        sessions.remove(token);
+    }
+
+    @Override
     public long getExpiresInSeconds() {
         return TOKEN_TTL.toSeconds();
     }

@@ -2,6 +2,7 @@ package com.licong.webbackup.dto;
 
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -13,6 +14,7 @@ public class ResetPasswordRequest {
     private String email;
 
     @NotBlank(message = "邮箱验证码不能为空")
+    @Pattern(regexp = "\\d{6}", message = "邮箱验证码应为6位数字")
     private String code;
 
     @NotBlank(message = "新密码不能为空")

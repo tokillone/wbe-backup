@@ -12,6 +12,7 @@ import com.licong.webbackup.mapper.LoginLogMapper;
 import com.licong.webbackup.mapper.UserMapper;
 import com.licong.webbackup.service.AuthService;
 import com.licong.webbackup.service.AuthTokenService;
+import com.licong.webbackup.service.CaptchaService;
 import com.licong.webbackup.service.VerificationCodeService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -25,17 +26,23 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final VerificationCodeService verificationCodeService;
     private final AuthTokenService authTokenService;
+    private final AuthRateLimiter authRateLimiter;
+    private final CaptchaService captchaService;
 
     public AuthServiceImpl(UserMapper userMapper,
                            LoginLogMapper loginLogMapper,
                            PasswordEncoder passwordEncoder,
                            VerificationCodeService verificationCodeService,
-                           AuthTokenService authTokenService) {
+                           AuthTokenService authTokenService,
+                           AuthRateLimiter authRateLimiter,
+                           CaptchaService captchaService) {
         this.userMapper = userMapper;
         this.loginLogMapper = loginLogMapper;
         this.passwordEncoder = passwordEncoder;
         this.verificationCodeService = verificationCodeService;
         this.authTokenService = authTokenService;
+        this.authRateLimiter = authRateLimiter;
+        this.captchaService = captchaService;
     }
 
     @Override
@@ -65,13 +72,21 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public LoginResponse login(LoginRequest request, String ipAddress, String userAgent) {
-        User user = userMapper.findByUsernameOrEmail(request.getAccount().trim());
+        String account = request.getAccount().trim();
+        authRateLimiter.checkLoginAllowed(account, ipAddress);
+        if (authRateLimiter.isCaptchaRequired(account, ipAddress)) {
+            captchaService.verifyCaptcha(request.getCaptchaId(), request.getCaptchaCode());
+        }
+
+        User user = userMapper.findByUsernameOrEmail(account);
         if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
-            throw new BusinessException("账号或密码错误");
+            authRateLimiter.recordLoginFailure(account, ipAddress);
+            throw loginFailureException(account, ipAddress);
         }
         if (!Boolean.TRUE.equals(user.getIsActive())) {
             throw new BusinessException("账号已被禁用");
         }
+        authRateLimiter.recordLoginSuccess(account, ipAddress);
 
         userMapper.updateLastLogin(user.getUserId());
         LoginLog loginLog = new LoginLog();
@@ -107,5 +122,15 @@ public class AuthServiceImpl implements AuthService {
             return null;
         }
         return value.trim();
+    }
+
+    private BusinessException loginFailureException(String account, String ipAddress) {
+        if (authRateLimiter.isLoginLocked(account, ipAddress)) {
+            return new BusinessException(429, "登录失败次数过多，请15分钟后再试");
+        }
+        if (authRateLimiter.isCaptchaRequired(account, ipAddress)) {
+            return new BusinessException(428, "需要图形验证码，请完成验证后重试");
+        }
+        return new BusinessException("账号或密码错误");
     }
 }
