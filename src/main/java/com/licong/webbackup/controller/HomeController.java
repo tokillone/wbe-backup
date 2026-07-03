@@ -22,7 +22,8 @@ public class HomeController {
     public ApiResponse<HomeOverviewResponse> overview(
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "minFrequency", required = false) Integer minFrequency,
-            @RequestParam(value = "targetGroup", required = false) String targetGroup) {
-        return ApiResponse.success(homeService.getOverview(limit, minFrequency, targetGroup));
+            @RequestParam(value = "targetGroup", required = false) String targetGroup,
+            @RequestParam(value = "targetCategory", required = false) String targetCategory) {
+        return ApiResponse.success(homeService.getOverview(limit, minFrequency, targetGroup, targetCategory));
     }
 }

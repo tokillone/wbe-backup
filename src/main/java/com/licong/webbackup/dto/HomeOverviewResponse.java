@@ -10,4 +10,5 @@ import java.util.List;
 public class HomeOverviewResponse {
 
     private List<BiomarkerFrequencyResponse> biomarkerFrequencies;
+    private List<TargetCategoryOptionResponse> targetCategoryOptions;
 }

@@ -33,17 +33,17 @@ INSERT INTO map_pndl_stats (
     is_mappable,
     refreshed_at
 )
-WITH base AS (
+WITH source_rows AS (
     SELECT
-      gl.level,
-      gl.geo_key,
-      gl.parent_geo_key,
-      gl.display_name,
-      gl.country,
-      gl.province,
-      gl.city,
-      gl.latitude,
-      gl.longitude,
+      CASE
+        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
+          THEN 'unitedsofamerica'
+        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
+          THEN 'czechia'
+        ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', ''))
+      END AS country_key,
+      LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.province), ''), '[^0-9a-zA-Z]+', '')) AS province_key,
+      LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.city), ''), '[^0-9a-zA-Z]+', '')) AS city_key,
       NULLIF(TRIM(c.target_category), '') AS target_class,
       NULLIF(TRIM(c.substance_category), '') AS category,
       COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类') AS source_subcategory,
@@ -60,17 +60,19 @@ WITH base AS (
       c.doi,
       m.measurement_id,
       CASE
-        WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
-          ('mg/day/1000 inh', 'mg/day/1000inh', 'mg/d/1000 inh', 'mg/d/1000inh',
-           'mg/day/1000 people', 'mg/d/1000 people', 'mg/1000p/day', 'mg/1000 inh/day',
-           'mg/day/1000 inhabitants')
-          THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value)
-        WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
-          ('g/day/1000 inh', 'g/day/1000inh', 'g/day/1000 people', 'g/d/1000 people',
-           'g/day/1000 inhabitants')
-          THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value) * 1000
-        ELSE NULL
-      END AS pndl_mg_d_1000inh,
+        WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+        WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+        ELSE m.pndl_estimated_value
+      END AS raw_pndl_value,
+      LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+        COALESCE(
+          CASE
+            WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+            WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+            ELSE m.pndl_estimated_unit
+          END,
+          ''
+        ), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) AS unit_key,
       CASE
         WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL'
         WHEN m.pndl_value IS NOT NULL THEN 'PNDL'
@@ -81,25 +83,102 @@ WITH base AS (
     JOIN compounds c ON c.compound_id = m.compound_id
     JOIN sampling_events se ON se.event_id = m.event_id
     JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-    JOIN geo_locations gl ON gl.is_mappable = TRUE
-      AND (
-        (gl.level = 'country'
-          AND (LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-            OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.country), ' ', '_'), '-', '_'), '.', '')) = gl.geo_key))
-        OR (gl.level = 'admin1'
-          AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-          AND (LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province))
-            OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.province), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
-        OR (gl.level = 'city'
-          AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-          AND (LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city))
-            OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.city), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
-      )
     WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
+),
+converted_rows AS (
+    SELECT
+      *,
+      CASE
+        WHEN unit_key REGEXP '^mg/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+          OR unit_key REGEXP '^mg/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+          THEN raw_pndl_value
+        WHEN unit_key REGEXP '^mg/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+          THEN raw_pndl_value * 1000
+        WHEN unit_key REGEXP '^g/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+          OR unit_key REGEXP '^g/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+          THEN raw_pndl_value * 1000
+        WHEN unit_key REGEXP '^g/(day|d)/(10000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+          THEN raw_pndl_value * 100
+        WHEN unit_key REGEXP '^ug/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+          OR unit_key REGEXP '^ug/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+          THEN raw_pndl_value / 1000
+        WHEN unit_key REGEXP '^ug/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+          OR unit_key REGEXP '^ug/(inh|inhabitant|person|people|persons|capita)/(day|d).*$'
+          THEN raw_pndl_value
+        ELSE NULL
+      END AS pndl_mg_d_1000inh
+    FROM source_rows
+),
+matched_rows AS (
+    SELECT
+      gl.level,
+      gl.geo_key,
+      gl.parent_geo_key,
+      gl.display_name,
+      gl.country,
+      gl.province,
+      gl.city,
+      gl.latitude,
+      gl.longitude,
+      converted_rows.*
+    FROM converted_rows
+    JOIN geo_locations gl ON gl.level = 'country'
+      AND gl.is_mappable = TRUE
+      AND gl.geo_key = converted_rows.country_key
+
+    UNION ALL
+
+    SELECT
+      gl.level,
+      gl.geo_key,
+      gl.parent_geo_key,
+      gl.display_name,
+      gl.country,
+      gl.province,
+      gl.city,
+      gl.latitude,
+      gl.longitude,
+      converted_rows.*
+    FROM converted_rows
+    JOIN geo_locations gl ON gl.level = 'admin1'
+      AND gl.is_mappable = TRUE
+      AND gl.parent_geo_key = converted_rows.country_key
+      AND converted_rows.province_key <> ''
+      AND (
+        converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.province), ''), '[^0-9a-zA-Z]+', ''))
+        OR converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
+        OR converted_rows.province_key = SUBSTRING_INDEX(gl.geo_key, '|', -1)
+        OR CONCAT(converted_rows.province_key, 'province') = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
+      )
+
+    UNION ALL
+
+    SELECT
+      gl.level,
+      gl.geo_key,
+      gl.parent_geo_key,
+      gl.display_name,
+      gl.country,
+      gl.province,
+      gl.city,
+      gl.latitude,
+      gl.longitude,
+      converted_rows.*
+    FROM converted_rows
+    JOIN geo_locations gl ON gl.level = 'city'
+      AND gl.is_mappable = TRUE
+      AND gl.parent_geo_key = converted_rows.country_key
+      AND converted_rows.city_key <> ''
+      AND (
+        converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.city), ''), '[^0-9a-zA-Z]+', ''))
+        OR converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
+        OR converted_rows.city_key = SUBSTRING_INDEX(gl.geo_key, '|', -1)
+        OR CONCAT(converted_rows.city_key, 'city') = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
+      )
 ),
 valid_base AS (
     SELECT *
-    FROM base
+    FROM matched_rows
     WHERE pndl_mg_d_1000inh IS NOT NULL
       AND pndl_mg_d_1000inh > 0
 ),

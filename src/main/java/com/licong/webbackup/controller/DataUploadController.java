@@ -2,10 +2,12 @@ package com.licong.webbackup.controller;
 
 import com.licong.webbackup.common.ApiResponse;
 import com.licong.webbackup.common.SecuritySupport;
+import com.licong.webbackup.dto.upload.DataUploadBatchPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadBatchResponse;
 import com.licong.webbackup.dto.upload.DataUploadPreviewResponse;
 import com.licong.webbackup.dto.upload.DataUploadRowsPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
+import com.licong.webbackup.dto.upload.RejectUploadRequest;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.service.DataUploadService;
 import org.springframework.core.io.ByteArrayResource;
@@ -17,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -26,7 +29,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/data-uploads")
@@ -59,16 +61,25 @@ public class DataUploadController {
     @PostMapping("/{uploadId}/reject")
     public ApiResponse<DataUploadBatchResponse> reject(
             @RequestHeader(value = "Authorization", required = false) String authorization,
-            @PathVariable Long uploadId) {
+            @PathVariable Long uploadId,
+            @RequestBody(required = false) RejectUploadRequest request) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success("批次已驳回", dataUploadService.reject(uploadId, user));
+        String reason = request == null ? null : request.getReason();
+        return ApiResponse.success("批次已驳回", dataUploadService.reject(uploadId, user, reason));
     }
 
     @GetMapping
-    public ApiResponse<List<DataUploadBatchResponse>> listBatches(
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
+    public ApiResponse<DataUploadBatchPageResponse> listBatches(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String scope,
+            @RequestParam(required = false) String uploaderType,
+            @RequestParam(defaultValue = "createdAt_desc") String sort) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success(dataUploadService.listBatches(user));
+        return ApiResponse.success(dataUploadService.listBatches(user, page, size, keyword, status, scope, uploaderType, sort));
     }
 
     @GetMapping("/template")
@@ -90,9 +101,10 @@ public class DataUploadController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable Long uploadId,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String status) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success(dataUploadService.listRows(uploadId, page, size, user));
+        return ApiResponse.success(dataUploadService.listRows(uploadId, page, size, status, user));
     }
 
     @GetMapping("/{uploadId}/file")

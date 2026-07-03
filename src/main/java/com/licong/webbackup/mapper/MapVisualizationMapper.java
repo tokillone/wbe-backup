@@ -14,6 +14,7 @@ public interface MapVisualizationMapper {
 
     @Select("""
             SELECT
+              target_class,
               category,
               subcategory,
               biomarker_key,
@@ -24,6 +25,7 @@ public interface MapVisualizationMapper {
             WHERE is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
             GROUP BY
+              target_class,
               category,
               subcategory,
               biomarker_key,
@@ -34,6 +36,7 @@ public interface MapVisualizationMapper {
               MAX(CASE WHEN level = 'city' THEN 1 ELSE 0 END) DESC,
               MAX(CASE WHEN level = 'city' THEN city_count ELSE 0 END) DESC,
               SUM(CASE WHEN level = 'city' THEN record_count ELSE 0 END) DESC,
+              target_class ASC,
               category ASC,
               CASE WHEN subcategory = '全部小类' THEN 0 ELSE 1 END,
               subcategory ASC,
@@ -74,6 +77,7 @@ public interface MapVisualizationMapper {
               pndl_sources
             FROM map_pndl_stats
             WHERE category = #{category}
+              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
               AND subcategory = #{subcategory}
               AND biomarker_key = #{biomarkerKey}
               AND year_label = #{year}
@@ -92,6 +96,7 @@ public interface MapVisualizationMapper {
             </script>
             """)
     List<MapRegionStatResponse> findStats(@Param("category") String category,
+                                           @Param("targetClass") String targetClass,
                                            @Param("subcategory") String subcategory,
                                            @Param("biomarkerKey") String biomarkerKey,
                                            @Param("year") String year,
@@ -128,6 +133,7 @@ public interface MapVisualizationMapper {
             WHERE level = #{level}
               AND geo_key = #{geoKey}
               AND category = #{category}
+              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
               AND subcategory = #{subcategory}
               AND biomarker_key = #{biomarkerKey}
               AND year_label = #{year}
@@ -136,6 +142,7 @@ public interface MapVisualizationMapper {
     MapRegionStatResponse findRegion(@Param("level") String level,
                                       @Param("geoKey") String geoKey,
                                       @Param("category") String category,
+                                      @Param("targetClass") String targetClass,
                                       @Param("subcategory") String subcategory,
                                       @Param("biomarkerKey") String biomarkerKey,
                                       @Param("year") String year);
@@ -156,15 +163,106 @@ public interface MapVisualizationMapper {
               se.source_workbook,
               se.original_row_number,
               CASE
-                WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
-                  ('mg/day/1000 inh', 'mg/day/1000inh', 'mg/d/1000 inh', 'mg/d/1000inh',
-                   'mg/day/1000 people', 'mg/d/1000 people', 'mg/1000p/day', 'mg/1000 inh/day',
-                   'mg/day/1000 inhabitants')
-                  THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value)
-                WHEN LOWER(COALESCE(m.plot_pndl_unit, m.pndl_unit, m.pndl_estimated_unit, '')) IN
-                  ('g/day/1000 inh', 'g/day/1000inh', 'g/day/1000 people', 'g/d/1000 people',
-                   'g/day/1000 inhabitants')
-                  THEN COALESCE(m.plot_pndl_value, m.pndl_value, m.pndl_estimated_value) * 1000
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^mg/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                  OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^mg/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^mg/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END * 1000
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^g/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                  OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^g/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END * 1000
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^g/(day|d)/(10000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END * 100
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^ug/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                  OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^ug/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END / 1000
+                WHEN LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^ug/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                  OR LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                    ELSE m.pndl_estimated_unit
+                  END,
+                  ''), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP '^ug/(inh|inhabitant|person|people|persons|capita)/(day|d).*$'
+                  THEN CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END
                 ELSE NULL
               END AS pndl_mg_d_1000inh,
               CASE
@@ -193,6 +291,7 @@ public interface MapVisualizationMapper {
                     OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.city), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
               )
             WHERE TRIM(c.substance_category) = #{category}
+              AND (#{targetClass} = 'ALL' OR TRIM(c.target_category) = #{targetClass})
               AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
               AND (#{biomarkerKey} = 'ALL'
                 OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
@@ -211,8 +310,142 @@ public interface MapVisualizationMapper {
     List<MapSourceRecordResponse> findSourceRecords(@Param("level") String level,
                                                     @Param("geoKey") String geoKey,
                                                     @Param("category") String category,
+                                                    @Param("targetClass") String targetClass,
                                                     @Param("subcategory") String subcategory,
                                                     @Param("biomarkerKey") String biomarkerKey,
                                                     @Param("year") String year,
                                                     @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM map_pndl_stats
+            WHERE is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+            """)
+    long countStatsRows();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM geo_locations
+            WHERE is_mappable = TRUE
+            """)
+    long countMappableGeoLocations();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM measurements
+            WHERE COALESCE(plot_pndl_value, pndl_value, pndl_estimated_value) > 0
+            """)
+    long countPositivePndlRows();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM (
+              SELECT
+                CASE
+                  WHEN unit_key REGEXP '^mg/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^mg/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value
+                  WHEN unit_key REGEXP '^mg/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                    THEN raw_value * 1000
+                  WHEN unit_key REGEXP '^g/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^g/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value * 1000
+                  WHEN unit_key REGEXP '^g/(day|d)/(10000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    THEN raw_value * 100
+                  WHEN unit_key REGEXP '^ug/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^ug/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value / 1000
+                  WHEN unit_key REGEXP '^ug/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                    OR unit_key REGEXP '^ug/(inh|inhabitant|person|people|persons|capita)/(day|d).*$'
+                    THEN raw_value
+                  ELSE NULL
+                END AS pndl_mg_d_1000inh
+              FROM (
+                SELECT
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END AS raw_value,
+                  LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    COALESCE(
+                      CASE
+                        WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                        WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                        ELSE m.pndl_estimated_unit
+                      END,
+                      ''
+                    ), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) AS unit_key
+                FROM measurements m
+                JOIN compounds c ON c.compound_id = m.compound_id
+                WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
+              ) unit_rows
+            ) converted_rows
+            WHERE pndl_mg_d_1000inh > 0
+            """)
+    long countConvertiblePndlRows();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM (
+              SELECT
+                country_key,
+                CASE
+                  WHEN unit_key REGEXP '^mg/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^mg/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value
+                  WHEN unit_key REGEXP '^mg/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                    THEN raw_value * 1000
+                  WHEN unit_key REGEXP '^g/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^g/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value * 1000
+                  WHEN unit_key REGEXP '^g/(day|d)/(10000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    THEN raw_value * 100
+                  WHEN unit_key REGEXP '^ug/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
+                    OR unit_key REGEXP '^ug/1000(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)$'
+                    THEN raw_value / 1000
+                  WHEN unit_key REGEXP '^ug/(day|d)/(inh|inhabitant|person|people|persons|capita).*$'
+                    OR unit_key REGEXP '^ug/(inh|inhabitant|person|people|persons|capita)/(day|d).*$'
+                    THEN raw_value
+                  ELSE NULL
+                END AS pndl_mg_d_1000inh
+              FROM (
+                SELECT
+                  CASE
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
+                      THEN 'unitedsofamerica'
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
+                      THEN 'czechia'
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'vietnam'
+                      THEN 'vietnam'
+                    ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', ''))
+                  END AS country_key,
+                  CASE
+                    WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
+                    WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
+                    ELSE m.pndl_estimated_value
+                  END AS raw_value,
+                  LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    COALESCE(
+                      CASE
+                        WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
+                        WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
+                        ELSE m.pndl_estimated_unit
+                      END,
+                      ''
+                    ), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) AS unit_key
+                FROM measurements m
+                JOIN compounds c ON c.compound_id = m.compound_id
+                JOIN sampling_events se ON se.event_id = m.event_id
+                JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+                WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
+              ) unit_rows
+            ) converted_rows
+            JOIN geo_locations gl ON gl.level = 'country'
+              AND gl.is_mappable = TRUE
+              AND gl.geo_key = converted_rows.country_key
+            WHERE pndl_mg_d_1000inh > 0
+            """)
+    long countMappablePndlRows();
 }

@@ -4,5 +4,5 @@ import com.licong.webbackup.dto.HomeOverviewResponse;
 
 public interface HomeService {
 
-    HomeOverviewResponse getOverview(Integer limit, Integer minFrequency, String targetGroup);
+    HomeOverviewResponse getOverview(Integer limit, Integer minFrequency, String targetGroup, String targetCategory);
 }

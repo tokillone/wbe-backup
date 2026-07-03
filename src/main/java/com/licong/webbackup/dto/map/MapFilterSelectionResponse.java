@@ -7,6 +7,7 @@ import lombok.Data;
 @Builder
 public class MapFilterSelectionResponse {
 
+    private String targetClass;
     private String category;
     private String subcategory;
     private String biomarkerKey;

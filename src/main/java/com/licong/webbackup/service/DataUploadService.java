@@ -2,6 +2,7 @@ package com.licong.webbackup.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.licong.webbackup.dto.upload.DataUploadBatchPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadBatchResponse;
 import com.licong.webbackup.dto.upload.DataUploadPreviewResponse;
 import com.licong.webbackup.dto.upload.DataUploadRowResponse;
@@ -245,7 +246,38 @@ public class DataUploadService {
         String duplicateMessage = findDuplicateMessage(sha256).orElse(null);
         StoredFile storedFile = storeFile(bytes, fileName);
 
-        ParsedWorkbook parsedWorkbook = parseWorkbook(bytes);
+        ParsedWorkbook parsedWorkbook;
+        try {
+            parsedWorkbook = parseWorkbook(bytes);
+        } catch (BusinessException ex) {
+            deleteStoredFile(storedFile);
+            String failureMessage = truncate("文件解析失败：" + ex.getMessage(), 500);
+            Long uploadId = insertBatch(
+                    fileName,
+                    null,
+                    sha256,
+                    user.getUserId(),
+                    "VALIDATION_FAILED",
+                    0,
+                    0,
+                    1,
+                    0,
+                    failureMessage
+            );
+            List<String> batchWarnings = new ArrayList<>();
+            if (duplicateMessage != null) {
+                batchWarnings.add(duplicateMessage);
+            }
+            batchWarnings.add(failureMessage);
+            return DataUploadPreviewResponse.builder()
+                    .batch(getBatch(uploadId))
+                    .requiredHeaders(REQUIRED_HEADERS)
+                    .optionalHeaders(OPTIONAL_HEADERS)
+                    .headerErrors(List.of(failureMessage))
+                    .batchWarnings(batchWarnings)
+                    .previewRows(List.of())
+                    .build();
+        }
         List<ParsedRow> rows = parsedWorkbook.rows();
         int errorRows = (int) rows.stream().filter(ParsedRow::hasErrors).count();
         int warningRows = (int) rows.stream().filter(ParsedRow::hasWarnings).count();
@@ -294,52 +326,131 @@ public class DataUploadService {
                 .build();
     }
 
-    public List<DataUploadBatchResponse> listBatches(User user) {
+    public DataUploadBatchPageResponse listBatches(
+            User user,
+            int page,
+            int size,
+            String keyword,
+            String status,
+            String scope,
+            String uploaderType,
+            String sort) {
         requireCanViewUploads(user);
-        if (canViewAllUploads(user)) {
-            return jdbcTemplate.query("""
-                        SELECT b.*, u.username AS uploaded_by_name
-                        FROM data_upload_batches b
-                        JOIN users u ON u.user_id = b.uploaded_by
-                        ORDER BY b.created_at DESC, b.upload_id DESC
-                        LIMIT 100
-                        """,
-                    batchMapper());
+        int normalizedSize = Math.max(1, Math.min(size, 100));
+        int normalizedPage = Math.max(1, page);
+        int offset = (normalizedPage - 1) * normalizedSize;
+        boolean canSeeAll = canViewAllUploads(user);
+
+        List<Object> args = new ArrayList<>();
+        StringBuilder where = new StringBuilder(" WHERE 1 = 1");
+        if (!canSeeAll) {
+            where.append(" AND b.uploaded_by = ?");
+            args.add(user.getUserId());
+        } else {
+            String normalizedScope = normalizeFilter(scope);
+            if ("mine".equals(normalizedScope)) {
+                where.append(" AND b.uploaded_by = ?");
+                args.add(user.getUserId());
+            } else if ("pendingReview".equals(normalizedScope)) {
+                where.append(" AND b.status = 'PENDING_REVIEW'");
+            }
+
+            String normalizedUploaderType = normalizeFilter(uploaderType);
+            if ("viewer".equals(normalizedUploaderType)) {
+                where.append(" AND u.role = 'viewer'");
+            } else if ("manager".equals(normalizedUploaderType)) {
+                where.append(" AND u.role IN ('admin', 'editor')");
+            }
         }
-        return jdbcTemplate.query("""
-                        SELECT b.*, u.username AS uploaded_by_name
-                        FROM data_upload_batches b
-                        JOIN users u ON u.user_id = b.uploaded_by
-                        WHERE b.uploaded_by = ?
-                        ORDER BY b.created_at DESC, b.upload_id DESC
-                        LIMIT 100
-                        """,
+
+        String normalizedStatus = normalizeFilter(status);
+        if (normalizedStatus != null && !"all".equals(normalizedStatus)) {
+            where.append(" AND b.status = ?");
+            args.add(normalizedStatus);
+        }
+
+        String normalizedKeyword = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
+        if (!normalizedKeyword.isBlank()) {
+            String like = "%" + normalizedKeyword + "%";
+            where.append("""
+                     AND (
+                        LOWER(b.file_name) LIKE ?
+                        OR LOWER(u.username) LIKE ?
+                        OR LOWER(u.email) LIKE ?
+                        OR LOWER(b.status) LIKE ?
+                        OR LOWER(COALESCE(b.duplicate_message, '')) LIKE ?
+                     )
+                    """);
+            args.add(like);
+            args.add(like);
+            args.add(like);
+            args.add(like);
+            args.add(like);
+        }
+
+        String orderBy = " ORDER BY b.created_at DESC, b.upload_id DESC";
+        if ("createdAt_asc".equals(sort)) {
+            orderBy = " ORDER BY b.created_at ASC, b.upload_id ASC";
+        }
+
+        String fromSql = """
+                FROM data_upload_batches b
+                JOIN users u ON u.user_id = b.uploaded_by
+                LEFT JOIN users reviewer ON reviewer.user_id = b.reviewed_by
+                LEFT JOIN users syncer ON syncer.user_id = b.synced_by
+                """;
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) " + fromSql + where, Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(normalizedSize);
+        pageArgs.add(offset);
+        List<DataUploadBatchResponse> items = jdbcTemplate.query(
+                batchSelectSql() + fromSql + where + orderBy + " LIMIT ? OFFSET ?",
                 batchMapper(),
-                user.getUserId());
+                pageArgs.toArray()
+        );
+        long safeTotal = total == null ? 0L : total;
+        int totalPages = safeTotal == 0 ? 0 : (int) Math.ceil((double) safeTotal / normalizedSize);
+        return DataUploadBatchPageResponse.builder()
+                .items(items)
+                .page(normalizedPage)
+                .size(normalizedSize)
+                .total(safeTotal)
+                .totalPages(totalPages)
+                .build();
     }
 
-    public DataUploadRowsPageResponse listRows(Long uploadId, int page, int size, User user) {
+    public DataUploadRowsPageResponse listRows(Long uploadId, int page, int size, String status, User user) {
         requireCanViewUploads(user);
         ensureBatchAccess(findBatchRecord(uploadId), user);
         int normalizedSize = Math.max(1, Math.min(size, 100));
         int normalizedPage = Math.max(1, page);
         int offset = (normalizedPage - 1) * normalizedSize;
+        String normalizedStatus = normalizeFilter(status);
+        boolean hasStatusFilter = normalizedStatus != null && !"all".equals(normalizedStatus);
+        List<Object> args = new ArrayList<>();
+        args.add(uploadId);
+        String where = "WHERE upload_id = ?";
+        if (hasStatusFilter) {
+            where += " AND row_status = ?";
+            args.add(normalizedStatus);
+        }
         Long total = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM data_upload_rows WHERE upload_id = ?",
+                "SELECT COUNT(*) FROM data_upload_rows " + where,
                 Long.class,
-                uploadId
+                args.toArray()
         );
+        List<Object> rowArgs = new ArrayList<>(args);
+        rowArgs.add(normalizedSize);
+        rowArgs.add(offset);
         List<DataUploadRowResponse> rows = jdbcTemplate.query("""
                         SELECT *
                         FROM data_upload_rows
-                        WHERE upload_id = ?
+                        %s
                         ORDER BY excel_row_number ASC
                         LIMIT ? OFFSET ?
-                        """,
+                        """.formatted(where),
                 rowMapper(),
-                uploadId,
-                normalizedSize,
-                offset
+                rowArgs.toArray()
         );
         return DataUploadRowsPageResponse.builder()
                 .uploadId(uploadId)
@@ -381,11 +492,16 @@ public class DataUploadService {
     public DataUploadSyncResponse sync(Long uploadId, User user) {
         requireCanSyncData(user);
         BatchRecord batch = findBatchRecord(uploadId);
+        ensureBatchAccess(batch, user);
+        boolean isPendingReview = "PENDING_REVIEW".equals(batch.status());
         if (!"PREVIEWED".equals(batch.status()) && !"PENDING_REVIEW".equals(batch.status())) {
             if ("SYNCED".equals(batch.status())) {
                 throw new BusinessException("该批次已经同步入库");
             }
             throw new BusinessException("该批次存在阻断错误，不能同步入库");
+        }
+        if (isPendingReview && !canReviewUploads(user)) {
+            throw new BusinessException(403, "待审核批次需要具备审核和同步权限后才能通过并入库");
         }
 
         List<DataUploadRowResponse> rows = jdbcTemplate.query("""
@@ -432,16 +548,37 @@ public class DataUploadService {
             }
         }
 
-        jdbcTemplate.update("""
-                        UPDATE data_upload_batches
-                        SET status = 'SYNCED',
-                            synced_rows = ?,
-                            synced_at = NOW()
-                        WHERE upload_id = ?
-                        """,
-                insertedRows,
-                uploadId
-        );
+        if (isPendingReview) {
+            jdbcTemplate.update("""
+                            UPDATE data_upload_batches
+                            SET status = 'SYNCED',
+                                synced_rows = ?,
+                                synced_at = NOW(),
+                                synced_by = ?,
+                                reviewed_by = ?,
+                                reviewed_at = NOW(),
+                                review_action = 'SYNCED'
+                            WHERE upload_id = ?
+                            """,
+                    insertedRows,
+                    user.getUserId(),
+                    user.getUserId(),
+                    uploadId
+            );
+        } else {
+            jdbcTemplate.update("""
+                            UPDATE data_upload_batches
+                            SET status = 'SYNCED',
+                                synced_rows = ?,
+                                synced_at = NOW(),
+                                synced_by = ?
+                            WHERE upload_id = ?
+                            """,
+                    insertedRows,
+                    user.getUserId(),
+                    uploadId
+            );
+        }
 
         tryRefreshMapStats(syncWarnings);
         return DataUploadSyncResponse.builder()
@@ -453,20 +590,36 @@ public class DataUploadService {
     }
 
     @Transactional
-    public DataUploadBatchResponse reject(Long uploadId, User user) {
+    public DataUploadBatchResponse reject(Long uploadId, User user, String reason) {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecord(uploadId);
-        if ("SYNCED".equals(batch.status())) {
-            throw new BusinessException("已入库批次不能驳回");
+        if (!"PENDING_REVIEW".equals(batch.status())) {
+            if ("SYNCED".equals(batch.status())) {
+                throw new BusinessException("已入库批次不能驳回");
+            }
+            if ("REJECTED".equals(batch.status())) {
+                throw new BusinessException("该批次已经驳回");
+            }
+            throw new BusinessException("只有待审核批次可以驳回");
         }
-        if ("REJECTED".equals(batch.status())) {
-            throw new BusinessException("该批次已经驳回");
+        String reviewNote = reason == null ? null : reason.trim();
+        if (reviewNote != null && reviewNote.length() > 500) {
+            throw new BusinessException("驳回原因不能超过 500 个字符");
+        }
+        if (reviewNote != null && reviewNote.isBlank()) {
+            reviewNote = null;
         }
         jdbcTemplate.update("""
                         UPDATE data_upload_batches
-                        SET status = 'REJECTED'
+                        SET status = 'REJECTED',
+                            reviewed_by = ?,
+                            reviewed_at = NOW(),
+                            review_action = 'REJECTED',
+                            review_note = ?
                         WHERE upload_id = ?
                         """,
+                user.getUserId(),
+                reviewNote,
                 uploadId
         );
         return getBatch(uploadId);
@@ -1180,6 +1333,24 @@ public class DataUploadService {
         }
     }
 
+    private void deleteStoredFile(StoredFile storedFile) {
+        if (storedFile == null || storedFile.path() == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(storedFile.path());
+        } catch (IOException ignored) {
+            // The failed upload is still audited even if the temporary file cleanup cannot complete.
+        }
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxLength - 1)) + "…";
+    }
+
     private String sha256(byte[] bytes) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1298,11 +1469,13 @@ public class DataUploadService {
 
     private DataUploadBatchResponse getBatch(Long uploadId) {
         return jdbcTemplate.queryForObject("""
-                        SELECT b.*, u.username AS uploaded_by_name
+                        %s
                         FROM data_upload_batches b
                         JOIN users u ON u.user_id = b.uploaded_by
+                        LEFT JOIN users reviewer ON reviewer.user_id = b.reviewed_by
+                        LEFT JOIN users syncer ON syncer.user_id = b.synced_by
                         WHERE b.upload_id = ?
-                        """,
+                        """.formatted(batchSelectSql()),
                 batchMapper(),
                 uploadId
         );
@@ -1336,6 +1509,7 @@ public class DataUploadService {
                 .status(rs.getString("status"))
                 .uploadedBy(rs.getLong("uploaded_by"))
                 .uploadedByName(rs.getString("uploaded_by_name"))
+                .uploadedByRole(rs.getString("uploaded_by_role"))
                 .totalRows(rs.getInt("total_rows"))
                 .validRows(rs.getInt("valid_rows"))
                 .errorRows(rs.getInt("error_rows"))
@@ -1344,7 +1518,32 @@ public class DataUploadService {
                 .duplicateMessage(rs.getString("duplicate_message"))
                 .createdAt(toLocalDateTime(rs.getTimestamp("created_at")))
                 .syncedAt(toLocalDateTime(rs.getTimestamp("synced_at")))
+                .reviewedBy((Long) rs.getObject("reviewed_by"))
+                .reviewedByName(rs.getString("reviewed_by_name"))
+                .reviewedAt(toLocalDateTime(rs.getTimestamp("reviewed_at")))
+                .reviewAction(rs.getString("review_action"))
+                .reviewNote(rs.getString("review_note"))
+                .syncedBy((Long) rs.getObject("synced_by"))
+                .syncedByName(rs.getString("synced_by_name"))
                 .build();
+    }
+
+    private String batchSelectSql() {
+        return """
+                SELECT b.*,
+                       u.username AS uploaded_by_name,
+                       u.role AS uploaded_by_role,
+                       reviewer.username AS reviewed_by_name,
+                       syncer.username AS synced_by_name
+                """;
+    }
+
+    private String normalizeFilter(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isBlank() ? null : trimmed;
     }
 
     private RowMapper<DataUploadRowResponse> rowMapper() {

@@ -38,13 +38,14 @@ public class MapVisualizationController {
 
     @GetMapping("/stats")
     public ResponseEntity<ApiResponse<MapStatsResponse>> stats(
+            @RequestParam(value = "targetClass", required = false) String targetClass,
             @RequestParam(value = "category", required = false) String category,
             @RequestParam(value = "subcategory", required = false) String subcategory,
             @RequestParam(value = "biomarkerKey", required = false) String biomarkerKey,
             @RequestParam(value = "year", required = false) String year,
             @RequestParam(value = "levels", required = false) String levels,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {
-        MapStatsResponse stats = mapVisualizationService.getStats(category, subcategory, biomarkerKey, year, levels);
+        MapStatsResponse stats = mapVisualizationService.getStats(targetClass, category, subcategory, biomarkerKey, year, levels);
         String eTag = quoteEtag(DigestUtils.md5DigestAsHex(stats.toString().getBytes(StandardCharsets.UTF_8)));
         if (eTag.equals(ifNoneMatch)) {
             return ResponseEntity.status(HttpStatus.NOT_MODIFIED)

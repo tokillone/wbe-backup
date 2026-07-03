@@ -13,4 +13,5 @@ public class MapStatsResponse {
     private MapSummaryResponse summary;
     private List<MapRegionStatResponse> regions;
     private List<MapRegionStatResponse> points;
+    private MapDiagnosticsResponse diagnostics;
 }

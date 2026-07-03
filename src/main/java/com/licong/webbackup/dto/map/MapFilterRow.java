@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class MapFilterRow {
 
+    private String targetClass;
     private String category;
     private String subcategory;
     private String biomarkerKey;

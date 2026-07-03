@@ -3,6 +3,7 @@ package com.licong.webbackup.mapper;
 import com.licong.webbackup.dto.BiomarkerFrequencyResponse;
 import com.licong.webbackup.dto.BiomarkerSubclassResponse;
 import com.licong.webbackup.dto.BiomarkerTrendPointResponse;
+import com.licong.webbackup.dto.TargetCategoryOptionResponse;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -22,7 +23,8 @@ public interface HomeMapper {
 	              MIN(h.target_category) AS target_category,
 	              MIN(h.target_group) AS target_group
             FROM home_target_records h
-            WHERE (#{targetGroup} = 'all' OR h.target_group = #{targetGroup})
+            WHERE (#{targetCategory} = 'all' OR h.target_category = #{targetCategory})
+              AND (#{targetCategory} <> 'all' OR #{targetGroup} = 'all' OR h.target_group = #{targetGroup})
               AND h.substance_category IS NOT NULL
               AND h.substance_category <> ''
               AND h.doi IS NOT NULL
@@ -33,6 +35,7 @@ public interface HomeMapper {
             LIMIT #{limit}
             """)
     List<BiomarkerFrequencyResponse> findTopBiomarkerFrequencies(@Param("targetGroup") String targetGroup,
+                                                                  @Param("targetCategory") String targetCategory,
                                                                   @Param("limit") int limit,
                                                                   @Param("minFrequency") int minFrequency);
 
@@ -42,7 +45,8 @@ public interface HomeMapper {
               COUNT(DISTINCT h.doi) AS frequency,
               COUNT(DISTINCT h.biomarker_name) AS biomarker_count
             FROM home_target_records h
-            WHERE (#{targetGroup} = 'all' OR h.target_group = #{targetGroup})
+            WHERE (#{targetCategory} = 'all' OR h.target_category = #{targetCategory})
+              AND (#{targetCategory} <> 'all' OR #{targetGroup} = 'all' OR h.target_group = #{targetGroup})
               AND h.substance_category = #{name}
               AND h.substance_subclass IS NOT NULL
               AND h.substance_subclass <> ''
@@ -51,6 +55,7 @@ public interface HomeMapper {
             ORDER BY frequency DESC, biomarker_count DESC, name ASC
             """)
     List<BiomarkerSubclassResponse> findCategorySubclasses(@Param("targetGroup") String targetGroup,
+                                                           @Param("targetCategory") String targetCategory,
                                                            @Param("name") String name);
 
     @Select("""
@@ -59,7 +64,8 @@ public interface HomeMapper {
 	              h.substance_subclass AS subclass,
 	              COUNT(DISTINCT h.doi) AS frequency
 	            FROM home_target_records h
-            WHERE (#{targetGroup} = 'all' OR h.target_group = #{targetGroup})
+            WHERE (#{targetCategory} = 'all' OR h.target_category = #{targetCategory})
+              AND (#{targetCategory} <> 'all' OR #{targetGroup} = 'all' OR h.target_group = #{targetGroup})
               AND h.substance_category = #{name}
               AND h.biomarker_name IS NOT NULL
               AND h.biomarker_name <> ''
@@ -71,5 +77,23 @@ public interface HomeMapper {
             ORDER BY h.substance_subclass ASC, frequency DESC, period ASC
             """)
     List<BiomarkerTrendPointResponse> findCategoryBiomarkers(@Param("targetGroup") String targetGroup,
+                                                             @Param("targetCategory") String targetCategory,
                                                              @Param("name") String name);
+
+    @Select("""
+            SELECT
+              h.target_category AS value,
+              h.target_category AS name,
+              COUNT(DISTINCT h.doi) AS frequency,
+              MIN(h.target_group) AS target_group
+            FROM home_target_records h
+            WHERE h.target_category IS NOT NULL
+              AND h.target_category <> ''
+              AND h.doi IS NOT NULL
+              AND h.doi <> ''
+            GROUP BY h.target_category
+            HAVING frequency > 0
+            ORDER BY frequency DESC, COUNT(*) DESC, name ASC
+            """)
+    List<TargetCategoryOptionResponse> findTargetCategoryOptions();
 }

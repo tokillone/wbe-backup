@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS map_pndl_stats (
     is_mappable BOOLEAN NOT NULL DEFAULT TRUE,
     refreshed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     KEY idx_map_filter (category, subcategory, biomarker_key, year_label, level, geo_key),
+    KEY idx_map_target_filter (target_class, category, subcategory, biomarker_key, year_label, level, geo_key),
     KEY idx_map_geo (level, geo_key),
     KEY idx_map_value (pndl_geomean_mg_d_1000inh)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化PNDL预聚合表';

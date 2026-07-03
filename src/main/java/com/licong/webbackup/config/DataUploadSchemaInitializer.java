@@ -33,13 +33,21 @@ public class DataUploadSchemaInitializer {
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     synced_at DATETIME NULL,
+                    reviewed_by BIGINT NULL,
+                    reviewed_at DATETIME NULL,
+                    review_action VARCHAR(32) NULL,
+                    review_note VARCHAR(500) NULL,
+                    synced_by BIGINT NULL,
                     INDEX idx_data_upload_user (uploaded_by),
                     INDEX idx_data_upload_status (status),
                     INDEX idx_data_upload_sha (sha256),
+                    INDEX idx_data_upload_reviewed_by (reviewed_by),
+                    INDEX idx_data_upload_synced_by (synced_by),
                     CONSTRAINT fk_data_upload_user FOREIGN KEY (uploaded_by)
                         REFERENCES users(user_id) ON DELETE RESTRICT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传批次审计表'
                 """);
+        ensureDataUploadBatchAuditColumns();
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS data_upload_rows (
                     row_id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -57,6 +65,28 @@ public class DataUploadSchemaInitializer {
                         REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传原始行与校验结果表'
                 """);
+    }
+
+    private void ensureDataUploadBatchAuditColumns() {
+        ensureDataUploadBatchColumn("reviewed_by", "BIGINT NULL COMMENT '审核人'");
+        ensureDataUploadBatchColumn("reviewed_at", "DATETIME NULL COMMENT '审核时间'");
+        ensureDataUploadBatchColumn("review_action", "VARCHAR(32) NULL COMMENT '审核动作'");
+        ensureDataUploadBatchColumn("review_note", "VARCHAR(500) NULL COMMENT '审核备注'");
+        ensureDataUploadBatchColumn("synced_by", "BIGINT NULL COMMENT '同步人'");
+    }
+
+    private void ensureDataUploadBatchColumn(String columnName, String columnDefinition) {
+        Integer columnCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'data_upload_batches'
+                  AND column_name = ?
+                """, Integer.class, columnName);
+        if (columnCount != null && columnCount > 0) {
+            return;
+        }
+        jdbcTemplate.execute("ALTER TABLE data_upload_batches ADD COLUMN " + columnName + " " + columnDefinition);
     }
 
     private void ensureUsersPermissionColumns() {

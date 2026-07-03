@@ -2,6 +2,7 @@ package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.map.MapBiomarkerOptionResponse;
 import com.licong.webbackup.dto.map.MapDetailResponse;
+import com.licong.webbackup.dto.map.MapDiagnosticsResponse;
 import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapFilterSelectionResponse;
@@ -30,6 +31,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final String ALL_SUBCATEGORY = "全部小类";
     private static final String ALL_BIOMARKERS = "ALL";
     private static final String ALL_YEARS = "全部年份";
+    private static final String ALL_TARGET_CLASSES = "ALL";
     private static final List<String> DEFAULT_LEVELS = List.of("country", "admin1", "city");
     private static final Set<String> VALID_LEVELS = Set.of("country", "admin1", "city");
     private static final List<String> LEGEND_COLORS = List.of("#fff7bc", "#fec44f", "#fe9929", "#d95f0e", "#993404");
@@ -44,6 +46,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     @Override
     public MapFilterResponse getFilters() {
         List<MapFilterRow> rows = mapVisualizationMapper.findFilterRows();
+        Map<String, LinkedHashSet<String>> categoriesByTargetClass = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> subcategoriesByCategory = new LinkedHashMap<>();
         Map<String, LinkedHashMap<String, MapBiomarkerOptionResponse>> biomarkersBySelection = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> yearsBySelection = new LinkedHashMap<>();
@@ -52,11 +55,13 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             if (!StringUtils.hasText(row.getCategory())) {
                 continue;
             }
+            String targetClass = valueOr(row.getTargetClass(), "未分类");
             String category = row.getCategory();
             String subcategory = valueOr(row.getSubcategory(), ALL_SUBCATEGORY);
             String biomarkerKey = valueOr(row.getBiomarkerKey(), ALL_BIOMARKERS);
             String year = valueOr(row.getYearLabel(), ALL_YEARS);
 
+            categoriesByTargetClass.computeIfAbsent(targetClass, ignored -> new LinkedHashSet<>()).add(category);
             subcategoriesByCategory.computeIfAbsent(category, ignored -> new LinkedHashSet<>()).add(subcategory);
             String categorySubcategoryKey = selectionKey(category, subcategory);
             biomarkersBySelection.computeIfAbsent(categorySubcategoryKey, ignored -> new LinkedHashMap<>())
@@ -69,6 +74,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .add(year);
         }
 
+        List<String> targetClasses = new ArrayList<>(categoriesByTargetClass.keySet());
+        Map<String, List<String>> categoriesByTargetClassResponse = new LinkedHashMap<>();
+        categoriesByTargetClass.forEach((key, value) -> categoriesByTargetClassResponse.put(key, new ArrayList<>(value)));
         List<String> categories = new ArrayList<>(subcategoriesByCategory.keySet());
         Map<String, List<String>> subcategoryResponse = new LinkedHashMap<>();
         subcategoriesByCategory.forEach((key, value) -> subcategoryResponse.put(key, new ArrayList<>(value)));
@@ -98,25 +106,30 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .orElse(defaultYears.get(0));
 
         return MapFilterResponse.builder()
+                .targetClasses(targetClasses)
                 .categories(categories)
+                .categoriesByTargetClass(categoriesByTargetClassResponse)
                 .subcategoriesByCategory(subcategoryResponse)
                 .biomarkersByCategorySubcategory(biomarkerResponse)
                 .yearsBySelection(yearResponse)
                 .defaultSelection(MapFilterSelectionResponse.builder()
+                        .targetClass(ALL_TARGET_CLASSES)
                         .category(defaultCategory)
                         .subcategory(defaultSubcategory)
                         .biomarkerKey(defaultBiomarker)
                         .year(defaultYear)
                         .build())
+                .diagnostics(buildDiagnostics(rows.isEmpty() ? "地图筛选项为空，请确认聚合表已刷新且存在可映射的 PNDL 数据。" : null))
                 .build();
     }
 
     @Override
-    public MapStatsResponse getStats(String category, String subcategory, String biomarkerKey, String year, String levels) {
-        MapFilterSelectionResponse selection = normalizeSelection(category, subcategory, biomarkerKey, year);
+    public MapStatsResponse getStats(String targetClass, String category, String subcategory, String biomarkerKey, String year, String levels) {
+        MapFilterSelectionResponse selection = normalizeSelection(targetClass, category, subcategory, biomarkerKey, year);
         List<String> requestedLevels = normalizeLevels(levels);
         List<MapRegionStatResponse> regions = mapVisualizationMapper.findStats(
                 selection.getCategory(),
+                selection.getTargetClass(),
                 selection.getSubcategory(),
                 selection.getBiomarkerKey(),
                 selection.getYear(),
@@ -130,6 +143,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .summary(buildSummary(regions, points))
                 .regions(regions)
                 .points(points)
+                .diagnostics(buildDiagnostics(regions.isEmpty() ? "当前筛选没有可映射的 PNDL 聚合结果。" : null))
                 .build();
     }
 
@@ -137,11 +151,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     public MapDetailResponse getDetail(String level, String geoKey, String category, String subcategory,
                                        String biomarkerKey, String year) {
         String normalizedLevel = normalizeLevel(level);
-        MapFilterSelectionResponse selection = normalizeSelection(category, subcategory, biomarkerKey, year);
+        MapFilterSelectionResponse selection = normalizeSelection(null, category, subcategory, biomarkerKey, year);
         MapRegionStatResponse region = mapVisualizationMapper.findRegion(
                 normalizedLevel,
                 geoKey,
                 selection.getCategory(),
+                selection.getTargetClass(),
                 selection.getSubcategory(),
                 selection.getBiomarkerKey(),
                 selection.getYear());
@@ -151,6 +166,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                         normalizedLevel,
                         geoKey,
                         selection.getCategory(),
+                        selection.getTargetClass(),
                         selection.getSubcategory(),
                         selection.getBiomarkerKey(),
                         selection.getYear(),
@@ -158,10 +174,11 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .build();
     }
 
-    private MapFilterSelectionResponse normalizeSelection(String category, String subcategory, String biomarkerKey, String year) {
+    private MapFilterSelectionResponse normalizeSelection(String targetClass, String category, String subcategory, String biomarkerKey, String year) {
         if (StringUtils.hasText(category) && StringUtils.hasText(subcategory)
                 && StringUtils.hasText(biomarkerKey) && StringUtils.hasText(year)) {
             return MapFilterSelectionResponse.builder()
+                    .targetClass(StringUtils.hasText(targetClass) ? targetClass.trim() : ALL_TARGET_CLASSES)
                     .category(category.trim())
                     .subcategory(subcategory.trim())
                     .biomarkerKey(biomarkerKey.trim())
@@ -169,6 +186,36 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .build();
         }
         return getFilters().getDefaultSelection();
+    }
+
+    private MapDiagnosticsResponse buildDiagnostics(String message) {
+        long statsRows = mapVisualizationMapper.countStatsRows();
+        long positivePndlRows = mapVisualizationMapper.countPositivePndlRows();
+        long convertiblePndlRows = mapVisualizationMapper.countConvertiblePndlRows();
+        long mappablePndlRows = mapVisualizationMapper.countMappablePndlRows();
+        long geoLocations = mapVisualizationMapper.countMappableGeoLocations();
+        String resolvedMessage = message;
+        if (!StringUtils.hasText(resolvedMessage) && statsRows == 0) {
+            if (positivePndlRows == 0) {
+                resolvedMessage = "源数据中没有正数 PNDL 记录。";
+            } else if (convertiblePndlRows == 0) {
+                resolvedMessage = "源数据有 PNDL，但单位暂不能转换为 mg/day/1000 inh。";
+            } else if (mappablePndlRows == 0) {
+                resolvedMessage = "源数据有可转换 PNDL，但国家/省市未能匹配到地理维表。";
+            } else if (geoLocations == 0) {
+                resolvedMessage = "地理维表为空，请先初始化 geo_locations。";
+            } else {
+                resolvedMessage = "地图聚合表为空，请刷新 map_pndl_stats。";
+            }
+        }
+        return MapDiagnosticsResponse.builder()
+                .statsRowCount(statsRows)
+                .positivePndlCount(positivePndlRows)
+                .convertiblePndlCount(convertiblePndlRows)
+                .mappablePndlCount(mappablePndlRows)
+                .geoLocationCount(geoLocations)
+                .message(resolvedMessage)
+                .build();
     }
 
     private List<String> normalizeLevels(String levels) {

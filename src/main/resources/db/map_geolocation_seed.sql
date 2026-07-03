@@ -1801,7 +1801,7 @@ INSERT INTO geo_locations (level, geo_key, parent_geo_key, country, province, ci
 ('country', 'unitedkingdom', NULL, 'United Kingdom', NULL, NULL, 'United Kingdom', 55.3787495, -5.9600725, TRUE, 'prototype-html'),
 ('country', 'unitedrepublicoftanzania', NULL, 'United Republic of Tanzania', NULL, NULL, 'United Republic of Tanzania', -6.3585500, 34.8783500, TRUE, 'boundary-centroid'),
 ('country', 'unitedsminoroutlyingislands', NULL, 'United States Minor Outlying Islands', NULL, NULL, 'United States Minor Outlying Islands', 13.9132500, -5.3727000, TRUE, 'boundary-centroid'),
-('country', 'unitedsofamerica', NULL, 'United States of America', NULL, NULL, 'United States of America', 45.1593000, 0.3187000, TRUE, 'boundary-centroid'),
+('country', 'unitedsofamerica', NULL, 'United States of America', NULL, NULL, 'United States of America', 39.8283000, -98.5795000, TRUE, 'manual-mainland-centroid'),
 ('country', 'unitedsvirginislands', NULL, 'United States Virgin Islands', NULL, NULL, 'United States Virgin Islands', 18.0378500, -64.7923500, TRUE, 'boundary-centroid'),
 ('country', 'uruguay', NULL, 'Uruguay', NULL, NULL, 'Uruguay', -32.5359500, -55.7767000, TRUE, 'boundary-centroid'),
 ('country', 'usnavalbaseguantanamobay', NULL, 'US Naval Base Guantanamo Bay', NULL, NULL, 'US Naval Base Guantanamo Bay', 19.9343000, -75.1630000, TRUE, 'boundary-centroid'),

@@ -14,6 +14,7 @@ public class DataUploadBatchResponse {
     private String status;
     private Long uploadedBy;
     private String uploadedByName;
+    private String uploadedByRole;
     private Integer totalRows;
     private Integer validRows;
     private Integer errorRows;
@@ -22,4 +23,11 @@ public class DataUploadBatchResponse {
     private String duplicateMessage;
     private LocalDateTime createdAt;
     private LocalDateTime syncedAt;
+    private Long reviewedBy;
+    private String reviewedByName;
+    private LocalDateTime reviewedAt;
+    private String reviewAction;
+    private String reviewNote;
+    private Long syncedBy;
+    private String syncedByName;
 }
