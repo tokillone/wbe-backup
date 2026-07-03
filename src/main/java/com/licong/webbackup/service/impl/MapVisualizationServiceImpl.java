@@ -32,6 +32,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final String ALL_BIOMARKERS = "ALL";
     private static final String ALL_YEARS = "全部年份";
     private static final String ALL_TARGET_CLASSES = "ALL";
+    private static final String ALL_CATEGORIES = "全部目标物质类别";
     private static final List<String> DEFAULT_LEVELS = List.of("country", "admin1", "city");
     private static final Set<String> VALID_LEVELS = Set.of("country", "admin1", "city");
     private static final List<String> LEGEND_COLORS = List.of("#fff7bc", "#fec44f", "#fe9929", "#d95f0e", "#993404");
@@ -61,7 +62,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             String biomarkerKey = valueOr(row.getBiomarkerKey(), ALL_BIOMARKERS);
             String year = valueOr(row.getYearLabel(), ALL_YEARS);
 
-            categoriesByTargetClass.computeIfAbsent(targetClass, ignored -> new LinkedHashSet<>()).add(category);
+            if (!ALL_TARGET_CLASSES.equals(targetClass)) {
+                categoriesByTargetClass.computeIfAbsent(targetClass, ignored -> new LinkedHashSet<>()).add(category);
+            }
             subcategoriesByCategory.computeIfAbsent(category, ignored -> new LinkedHashSet<>()).add(subcategory);
             String categorySubcategoryKey = selectionKey(category, subcategory);
             biomarkersBySelection.computeIfAbsent(categorySubcategoryKey, ignored -> new LinkedHashMap<>())
@@ -78,6 +81,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         Map<String, List<String>> categoriesByTargetClassResponse = new LinkedHashMap<>();
         categoriesByTargetClass.forEach((key, value) -> categoriesByTargetClassResponse.put(key, new ArrayList<>(value)));
         List<String> categories = new ArrayList<>(subcategoriesByCategory.keySet());
+        moveAllCategoryToFront(categories);
+        categoriesByTargetClassResponse.values().forEach(this::moveAllCategoryToFront);
         Map<String, List<String>> subcategoryResponse = new LinkedHashMap<>();
         subcategoriesByCategory.forEach((key, value) -> subcategoryResponse.put(key, new ArrayList<>(value)));
         Map<String, List<MapBiomarkerOptionResponse>> biomarkerResponse = new LinkedHashMap<>();
@@ -85,7 +90,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         Map<String, List<String>> yearResponse = new LinkedHashMap<>();
         yearsBySelection.forEach((key, value) -> yearResponse.put(key, new ArrayList<>(value)));
 
-        String defaultCategory = categories.isEmpty() ? "" : categories.get(0);
+        String defaultCategory = categories.stream()
+                .filter(category -> !ALL_CATEGORIES.equals(category))
+                .findFirst()
+                .orElse(categories.isEmpty() ? "" : categories.get(0));
         String defaultSubcategory = subcategoryResponse.getOrDefault(defaultCategory, List.of(ALL_SUBCATEGORY))
                 .stream()
                 .filter(ALL_SUBCATEGORY::equals)
@@ -148,10 +156,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     }
 
     @Override
-    public MapDetailResponse getDetail(String level, String geoKey, String category, String subcategory,
-                                       String biomarkerKey, String year) {
+    public MapDetailResponse getDetail(String level, String geoKey, String targetClass, String category,
+                                       String subcategory, String biomarkerKey, String year) {
         String normalizedLevel = normalizeLevel(level);
-        MapFilterSelectionResponse selection = normalizeSelection(null, category, subcategory, biomarkerKey, year);
+        MapFilterSelectionResponse selection = normalizeSelection(targetClass, category, subcategory, biomarkerKey, year);
         MapRegionStatResponse region = mapVisualizationMapper.findRegion(
                 normalizedLevel,
                 geoKey,
@@ -186,6 +194,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .build();
         }
         return getFilters().getDefaultSelection();
+    }
+
+    private void moveAllCategoryToFront(List<String> categories) {
+        if (categories.remove(ALL_CATEGORIES)) {
+            categories.add(0, ALL_CATEGORIES);
+        }
     }
 
     private MapDiagnosticsResponse buildDiagnostics(String message) {

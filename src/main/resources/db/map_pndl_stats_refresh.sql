@@ -44,7 +44,7 @@ WITH source_rows AS (
       END AS country_key,
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.province), ''), '[^0-9a-zA-Z]+', '')) AS province_key,
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.city), ''), '[^0-9a-zA-Z]+', '')) AS city_key,
-      NULLIF(TRIM(c.target_category), '') AS target_class,
+      COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') AS target_class,
       NULLIF(TRIM(c.substance_category), '') AS category,
       COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类') AS source_subcategory,
       COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) AS source_biomarker_key,
@@ -183,29 +183,43 @@ valid_base AS (
       AND pndl_mg_d_1000inh > 0
 ),
 expanded AS (
-    SELECT *, source_subcategory AS subcategory, source_biomarker_key AS biomarker_key,
-      source_biomarker_label AS biomarker_label, source_year AS year_label
+    SELECT *, target_class AS agg_target_class, category AS agg_category,
+      source_subcategory AS subcategory, source_biomarker_key AS biomarker_key,
+      source_biomarker_label AS biomarker_label, biomarker_cas AS expanded_biomarker_cas,
+      source_year AS year_label
     FROM valid_base
     UNION ALL
-    SELECT *, '全部小类', source_biomarker_key, source_biomarker_label, source_year
+    SELECT *, target_class, category, '全部小类', source_biomarker_key, source_biomarker_label, biomarker_cas, source_year
     FROM valid_base
     UNION ALL
-    SELECT *, source_subcategory, 'ALL', '全部 biomarker', source_year
+    SELECT *, target_class, category, source_subcategory, 'ALL', '全部 biomarker', NULL, source_year
     FROM valid_base
     UNION ALL
-    SELECT *, '全部小类', 'ALL', '全部 biomarker', source_year
+    SELECT *, target_class, category, '全部小类', 'ALL', '全部 biomarker', NULL, source_year
     FROM valid_base
     UNION ALL
-    SELECT *, source_subcategory, source_biomarker_key, source_biomarker_label, '全部年份'
+    SELECT *, target_class, category, source_subcategory, source_biomarker_key, source_biomarker_label, biomarker_cas, '全部年份'
     FROM valid_base
     UNION ALL
-    SELECT *, '全部小类', source_biomarker_key, source_biomarker_label, '全部年份'
+    SELECT *, target_class, category, '全部小类', source_biomarker_key, source_biomarker_label, biomarker_cas, '全部年份'
     FROM valid_base
     UNION ALL
-    SELECT *, source_subcategory, 'ALL', '全部 biomarker', '全部年份'
+    SELECT *, target_class, category, source_subcategory, 'ALL', '全部 biomarker', NULL, '全部年份'
     FROM valid_base
     UNION ALL
-    SELECT *, '全部小类', 'ALL', '全部 biomarker', '全部年份'
+    SELECT *, target_class, category, '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
+    FROM valid_base
+    UNION ALL
+    SELECT *, target_class, '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, source_year
+    FROM valid_base
+    UNION ALL
+    SELECT *, target_class, '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
+    FROM valid_base
+    UNION ALL
+    SELECT *, 'ALL', '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, source_year
+    FROM valid_base
+    UNION ALL
+    SELECT *, 'ALL', '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
     FROM valid_base
 )
 SELECT
@@ -218,12 +232,12 @@ SELECT
     city,
     latitude,
     longitude,
-    MIN(target_class) AS target_class,
-    category,
+    MIN(agg_target_class) AS target_class,
+    agg_category AS category,
     subcategory,
     biomarker_key,
     biomarker_label,
-    CASE WHEN biomarker_key = 'ALL' THEN NULL ELSE MIN(biomarker_cas) END AS biomarker_cas,
+    CASE WHEN biomarker_key = 'ALL' THEN NULL ELSE MIN(expanded_biomarker_cas) END AS biomarker_cas,
     year_label,
     EXP(AVG(LN(pndl_mg_d_1000inh))) AS pndl_geomean_mg_d_1000inh,
     AVG(pndl_mg_d_1000inh) AS pndl_mean_mg_d_1000inh,
@@ -248,7 +262,7 @@ GROUP BY
     city,
     latitude,
     longitude,
-    category,
+    agg_category,
     subcategory,
     biomarker_key,
     biomarker_label,

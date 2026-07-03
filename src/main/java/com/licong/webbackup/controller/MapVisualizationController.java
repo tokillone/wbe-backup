@@ -63,11 +63,12 @@ public class MapVisualizationController {
     public ApiResponse<MapDetailResponse> detail(
             @RequestParam("level") String level,
             @RequestParam("geoKey") String geoKey,
+            @RequestParam(value = "targetClass", required = false) String targetClass,
             @RequestParam("category") String category,
             @RequestParam("subcategory") String subcategory,
             @RequestParam("biomarkerKey") String biomarkerKey,
             @RequestParam("year") String year) {
-        return ApiResponse.success(mapVisualizationService.getDetail(level, geoKey, category, subcategory, biomarkerKey, year));
+        return ApiResponse.success(mapVisualizationService.getDetail(level, geoKey, targetClass, category, subcategory, biomarkerKey, year));
     }
 
     private String quoteEtag(String value) {

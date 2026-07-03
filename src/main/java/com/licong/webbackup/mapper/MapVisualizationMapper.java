@@ -77,7 +77,10 @@ public interface MapVisualizationMapper {
               pndl_sources
             FROM map_pndl_stats
             WHERE category = #{category}
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND (
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+              )
               AND subcategory = #{subcategory}
               AND biomarker_key = #{biomarkerKey}
               AND year_label = #{year}
@@ -133,7 +136,10 @@ public interface MapVisualizationMapper {
             WHERE level = #{level}
               AND geo_key = #{geoKey}
               AND category = #{category}
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND (
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+              )
               AND subcategory = #{subcategory}
               AND biomarker_key = #{biomarkerKey}
               AND year_label = #{year}
@@ -290,8 +296,8 @@ public interface MapVisualizationMapper {
                   AND (LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city))
                     OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.city), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
               )
-            WHERE TRIM(c.substance_category) = #{category}
-              AND (#{targetClass} = 'ALL' OR TRIM(c.target_category) = #{targetClass})
+            WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
               AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
               AND (#{biomarkerKey} = 'ALL'
                 OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
