@@ -575,6 +575,14 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private List<MapRegionStatResponse> preferredFallbackRows(List<MapRegionStatResponse> rows,
                                                               MapFilterSelectionResponse selection) {
         List<MapRegionStatResponse> preferred = rows;
+        if (ALL_YEARS.equals(selection.getYear())) {
+            List<MapRegionStatResponse> yearAggregates = preferred.stream()
+                    .filter(row -> ALL_YEARS.equals(row.getYearLabel()))
+                    .toList();
+            if (!yearAggregates.isEmpty()) {
+                preferred = yearAggregates;
+            }
+        }
         if (ALL_SUBCATEGORY.equals(selection.getSubcategory())) {
             List<MapRegionStatResponse> subcategoryAggregates = preferred.stream()
                     .filter(row -> ALL_SUBCATEGORY.equals(row.getSubcategory()))

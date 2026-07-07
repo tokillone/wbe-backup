@@ -141,7 +141,7 @@ public interface MapVisualizationMapper {
               AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
-              AND year_label = #{year}
+              AND (#{year} = '全部年份' OR year_label = #{year})
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
               <if test="levels != null and levels.size() &gt; 0">
@@ -302,7 +302,7 @@ public interface MapVisualizationMapper {
               AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
-              AND year_label = #{year}
+              AND (#{year} = '全部年份' OR year_label = #{year})
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
               <if test="locations != null and locations.size() &gt; 0">
@@ -394,7 +394,7 @@ public interface MapVisualizationMapper {
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND biomarker_key != 'ALL'
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
-              AND year_label = #{year}
+              AND (#{year} = '全部年份' OR year_label = #{year})
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
               <if test="locations != null and locations.size() &gt; 0">
@@ -428,7 +428,7 @@ public interface MapVisualizationMapper {
               AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
               AND subcategory = '全部小类'
               AND biomarker_key = 'ALL'
-              AND year_label = #{year}
+              AND (#{year} = '全部年份' OR year_label = #{year})
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
               <if test="locations != null and locations.size() &gt; 0">
