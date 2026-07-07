@@ -63,6 +63,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         Map<String, LinkedHashSet<String>> subcategoriesByCategory = new LinkedHashMap<>();
         Map<String, LinkedHashMap<String, MapBiomarkerOptionResponse>> biomarkersBySelection = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> yearsBySelection = new LinkedHashMap<>();
+        LinkedHashSet<String> allYears = new LinkedHashSet<>();
 
         for (MapFilterRow row : rows) {
             if (!StringUtils.hasText(row.getCategory())) {
@@ -74,6 +75,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             String biomarkerKey = valueOr(row.getBiomarkerKey(), ALL_BIOMARKERS);
             String year = valueOr(row.getYearLabel(), ALL_YEARS);
 
+            allYears.add(year);
             if (!ALL_TARGET_CLASSES.equals(targetClass)) {
                 categoriesByTargetClass.computeIfAbsent(targetClass, ignored -> new LinkedHashSet<>()).add(category);
             }
@@ -88,6 +90,21 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             yearsBySelection.computeIfAbsent(selectionKey(category, subcategory, biomarkerKey), ignored -> new LinkedHashSet<>())
                     .add(year);
         }
+
+        allYears.add(ALL_YEARS);
+        categoriesByTargetClass.values().forEach(categories -> {
+            categories.remove(ALL_CATEGORIES);
+            categories.add(ALL_CATEGORIES);
+        });
+        subcategoriesByCategory.computeIfAbsent(ALL_CATEGORIES, ignored -> new LinkedHashSet<>()).add(ALL_SUBCATEGORY);
+        biomarkersBySelection.computeIfAbsent(selectionKey(ALL_CATEGORIES, ALL_SUBCATEGORY), ignored -> new LinkedHashMap<>())
+                .putIfAbsent(ALL_BIOMARKERS, MapBiomarkerOptionResponse.builder()
+                        .key(ALL_BIOMARKERS)
+                        .label("全部 biomarker")
+                        .cas(null)
+                        .build());
+        yearsBySelection.computeIfAbsent(selectionKey(ALL_CATEGORIES, ALL_SUBCATEGORY, ALL_BIOMARKERS), ignored -> new LinkedHashSet<>())
+                .addAll(allYears);
 
         List<String> targetClasses = new ArrayList<>(categoriesByTargetClass.keySet());
         Map<String, List<String>> categoriesByTargetClassResponse = new LinkedHashMap<>();
@@ -153,6 +170,14 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLevels);
+        if (regions.isEmpty() && ALL_CATEGORIES.equals(selection.getCategory())) {
+            regions = mergeAnyCategoryStats(mapVisualizationMapper.findStatsForAnyCategory(
+                    selection.getTargetClass(),
+                    selection.getSubcategory(),
+                    selection.getBiomarkerKey(),
+                    selection.getYear(),
+                    requestedLevels), selection);
+        }
         List<MapRegionStatResponse> points = regions.stream()
                 .filter(row -> row.getLatitude() != null && row.getLongitude() != null)
                 .toList();
@@ -180,6 +205,17 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear());
         MapClusterLocationRequest location = clusterLocation(normalizedLevel, geoKey);
+        if (region == null && ALL_CATEGORIES.equals(selection.getCategory())) {
+            List<MapRegionStatResponse> merged = mergeAnyCategoryStats(
+                    mapVisualizationMapper.findRegionsByKeysForAnyCategory(
+                            selection.getTargetClass(),
+                            selection.getSubcategory(),
+                            selection.getBiomarkerKey(),
+                            selection.getYear(),
+                            List.of(location)),
+                    selection);
+            region = merged.isEmpty() ? null : merged.get(0);
+        }
         List<MapSourceRecordResponse> sources = mapVisualizationMapper.findSourceRecords(
                 normalizedLevel,
                 geoKey,
@@ -224,6 +260,14 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLocations);
+        if (regions.isEmpty() && ALL_CATEGORIES.equals(selection.getCategory())) {
+            regions = mergeAnyCategoryStats(mapVisualizationMapper.findRegionsByKeysForAnyCategory(
+                    selection.getTargetClass(),
+                    selection.getSubcategory(),
+                    selection.getBiomarkerKey(),
+                    selection.getYear(),
+                    requestedLocations), selection);
+        }
         List<MapSourceRecordResponse> sources = collectSourceRecords(
                 requestedLocations,
                 selection,
@@ -471,6 +515,86 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             return fallback;
         }
         return Math.min(value, max);
+    }
+
+    private List<MapRegionStatResponse> mergeAnyCategoryStats(List<MapRegionStatResponse> rows,
+                                                              MapFilterSelectionResponse selection) {
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<String, List<MapRegionStatResponse>> grouped = rows.stream()
+                .filter(row -> row.getLevel() != null && row.getGeoKey() != null)
+                .collect(LinkedHashMap::new,
+                        (map, row) -> map.computeIfAbsent(row.getLevel() + "|" + row.getGeoKey(), ignored -> new ArrayList<>()).add(row),
+                        Map::putAll);
+        return grouped.values().stream()
+                .map(group -> mergeRegionGroup(group, selection))
+                .sorted(Comparator
+                        .comparing(MapRegionStatResponse::getLevel, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(MapRegionStatResponse::getDisplayName, Comparator.nullsLast(String::compareTo)))
+                .toList();
+    }
+
+    private MapRegionStatResponse mergeRegionGroup(List<MapRegionStatResponse> group,
+                                                   MapFilterSelectionResponse selection) {
+        MapRegionStatResponse first = group.get(0);
+        MapRegionStatResponse merged = new MapRegionStatResponse();
+        merged.setLevel(first.getLevel());
+        merged.setGeoKey(first.getGeoKey());
+        merged.setParentGeoKey(first.getParentGeoKey());
+        merged.setDisplayName(first.getDisplayName());
+        merged.setCountry(first.getCountry());
+        merged.setProvince(first.getProvince());
+        merged.setCity(first.getCity());
+        merged.setLatitude(first.getLatitude());
+        merged.setLongitude(first.getLongitude());
+        merged.setCategory(ALL_CATEGORIES);
+        merged.setSubcategory(selection.getSubcategory());
+        merged.setBiomarkerKey(selection.getBiomarkerKey());
+        merged.setBiomarkerLabel(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? "全部 biomarker" : first.getBiomarkerLabel());
+        merged.setBiomarkerCas(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? null : first.getBiomarkerCas());
+        merged.setYearLabel(selection.getYear());
+        merged.setPndlGeomeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlGeomeanMgD1000inh));
+        merged.setPndlMeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlMeanMgD1000inh));
+        merged.setPndlMinMgD1000inh(group.stream().map(MapRegionStatResponse::getPndlMinMgD1000inh).filter(Objects::nonNull)
+                .min(BigDecimal::compareTo).orElse(null));
+        merged.setPndlMaxMgD1000inh(group.stream().map(MapRegionStatResponse::getPndlMaxMgD1000inh).filter(Objects::nonNull)
+                .max(BigDecimal::compareTo).orElse(null));
+        merged.setRecordCount(sumLong(group, MapRegionStatResponse::getRecordCount));
+        merged.setDoiCount(sumLong(group, MapRegionStatResponse::getDoiCount));
+        merged.setYearCount(maxLong(group, MapRegionStatResponse::getYearCount));
+        merged.setCityCount(sumLong(group, MapRegionStatResponse::getCityCount));
+        merged.setPointCount(sumLong(group, MapRegionStatResponse::getPointCount));
+        merged.setPndlSources("多类别合并显示");
+        return merged;
+    }
+
+    private BigDecimal weightedAverage(List<MapRegionStatResponse> rows,
+                                       java.util.function.Function<MapRegionStatResponse, BigDecimal> getter) {
+        BigDecimal weightedSum = BigDecimal.ZERO;
+        long weightSum = 0;
+        for (MapRegionStatResponse row : rows) {
+            BigDecimal value = getter.apply(row);
+            if (value == null) {
+                continue;
+            }
+            long weight = row.getRecordCount() == null || row.getRecordCount() <= 0 ? 1L : row.getRecordCount();
+            weightedSum = weightedSum.add(value.multiply(BigDecimal.valueOf(weight)));
+            weightSum += weight;
+        }
+        return weightSum <= 0 ? null : weightedSum.divide(BigDecimal.valueOf(weightSum), 6, RoundingMode.HALF_UP);
+    }
+
+    private long sumLong(List<MapRegionStatResponse> rows,
+                         java.util.function.Function<MapRegionStatResponse, Long> getter) {
+        return rows.stream().map(getter).filter(Objects::nonNull).mapToLong(Long::longValue).sum();
+    }
+
+    private long maxLong(List<MapRegionStatResponse> rows,
+                         java.util.function.Function<MapRegionStatResponse, Long> getter) {
+        return rows.stream().map(getter).filter(Objects::nonNull).mapToLong(Long::longValue).max().orElse(0L);
     }
 
     private MapFilterSelectionResponse normalizeSelection(String targetClass, String category, String subcategory, String biomarkerKey, String year) {
