@@ -1,5 +1,6 @@
 package com.licong.webbackup.service;
 
+import com.licong.webbackup.dto.map.MapClusterDetailRequest;
 import com.licong.webbackup.dto.map.MapDetailResponse;
 import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapStatsResponse;
@@ -12,4 +13,6 @@ public interface MapVisualizationService {
 
     MapDetailResponse getDetail(String level, String geoKey, String targetClass, String category,
                                 String subcategory, String biomarkerKey, String year);
+
+    MapDetailResponse getClusterDetail(MapClusterDetailRequest request);
 }

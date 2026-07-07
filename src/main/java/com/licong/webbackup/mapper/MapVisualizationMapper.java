@@ -1,8 +1,11 @@
 package com.licong.webbackup.mapper;
 
+import com.licong.webbackup.dto.map.MapBreakdownRow;
+import com.licong.webbackup.dto.map.MapClusterLocationRequest;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
+import com.licong.webbackup.dto.map.MapTopBiomarkerResponse;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -152,6 +155,190 @@ public interface MapVisualizationMapper {
                                       @Param("subcategory") String subcategory,
                                       @Param("biomarkerKey") String biomarkerKey,
                                       @Param("year") String year);
+
+    @Select("""
+            <script>
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE category = #{category}
+              AND (
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+              )
+              AND subcategory = #{subcategory}
+              AND biomarker_key = #{biomarkerKey}
+              AND year_label = #{year}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+              <if test="locations != null and locations.size() &gt; 0">
+                AND (
+                <foreach item="location" collection="locations" separator=" OR ">
+                  (level = #{location.level} AND geo_key = #{location.geoKey})
+                </foreach>
+                )
+              </if>
+            ORDER BY
+              FIELD(level, 'country', 'admin1', 'city'),
+              pndl_geomean_mg_d_1000inh DESC,
+              display_name ASC
+            </script>
+            """)
+    List<MapRegionStatResponse> findRegionsByKeys(@Param("category") String category,
+                                                   @Param("targetClass") String targetClass,
+                                                   @Param("subcategory") String subcategory,
+                                                   @Param("biomarkerKey") String biomarkerKey,
+                                                   @Param("year") String year,
+                                                   @Param("locations") List<MapClusterLocationRequest> locations);
+
+    @Select("""
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE level = #{level}
+              AND category = #{category}
+              AND (
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+              )
+              AND subcategory = #{subcategory}
+              AND biomarker_key = #{biomarkerKey}
+              AND year_label = #{year}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+            ORDER BY pndl_geomean_mg_d_1000inh DESC, record_count DESC, display_name ASC
+            LIMIT #{limit}
+            """)
+    List<MapRegionStatResponse> findRankingStats(@Param("level") String level,
+                                                  @Param("category") String category,
+                                                  @Param("targetClass") String targetClass,
+                                                  @Param("subcategory") String subcategory,
+                                                  @Param("biomarkerKey") String biomarkerKey,
+                                                  @Param("year") String year,
+                                                  @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT
+              biomarker_key,
+              COALESCE(NULLIF(TRIM(biomarker_label), ''), biomarker_key) AS biomarker_label,
+              MAX(biomarker_cas) AS biomarker_cas,
+              MIN(category) AS category,
+              MIN(subcategory) AS subcategory,
+              SUM(record_count) AS record_count,
+              SUM(doi_count) AS doi_count,
+              SUM(point_count) AS point_count,
+              TRUE AS has_pndl
+            FROM map_pndl_stats
+            WHERE category != '全部目标物质类别'
+              AND (#{category} = '全部目标物质类别' OR category = #{category})
+              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND subcategory != '全部小类'
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND biomarker_key != 'ALL'
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
+              AND year_label = #{year}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+              <if test="locations != null and locations.size() &gt; 0">
+                AND (
+                <foreach item="location" collection="locations" separator=" OR ">
+                  (level = #{location.level} AND geo_key = #{location.geoKey})
+                </foreach>
+                )
+              </if>
+            GROUP BY biomarker_key, biomarker_label
+            ORDER BY SUM(record_count) DESC, SUM(point_count) DESC, biomarker_label ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MapTopBiomarkerResponse> findTopBiomarkersForLocations(@Param("category") String category,
+                                                                 @Param("targetClass") String targetClass,
+                                                                 @Param("subcategory") String subcategory,
+                                                                 @Param("biomarkerKey") String biomarkerKey,
+                                                                 @Param("year") String year,
+                                                                 @Param("locations") List<MapClusterLocationRequest> locations,
+                                                                 @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT
+              category AS label,
+              SUM(record_count) AS record_count
+            FROM map_pndl_stats
+            WHERE category != '全部目标物质类别'
+              AND (#{category} = '全部目标物质类别' OR category = #{category})
+              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND subcategory = '全部小类'
+              AND biomarker_key = 'ALL'
+              AND year_label = #{year}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+              <if test="locations != null and locations.size() &gt; 0">
+                AND (
+                <foreach item="location" collection="locations" separator=" OR ">
+                  (level = #{location.level} AND geo_key = #{location.geoKey})
+                </foreach>
+                )
+              </if>
+            GROUP BY category
+            ORDER BY SUM(record_count) DESC, category ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MapBreakdownRow> findCategoryBreakdownForLocations(@Param("category") String category,
+                                                            @Param("targetClass") String targetClass,
+                                                            @Param("year") String year,
+                                                            @Param("locations") List<MapClusterLocationRequest> locations,
+                                                            @Param("limit") int limit);
 
     @Select("""
             <script>

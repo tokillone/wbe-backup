@@ -9,6 +9,15 @@ import java.util.List;
 @Builder
 public class MapDetailResponse {
 
+    private String title;
+    private String subtitle;
+    private Boolean cluster;
     private MapRegionStatResponse region;
+    private List<MapRegionStatResponse> locations;
+    private List<MapSummaryCardResponse> summaryCards;
+    private List<MapTopBiomarkerResponse> topBiomarkers;
+    private List<MapPndlRankingItemResponse> pndlRanking;
+    private List<MapBreakdownItemResponse> categoryBreakdown;
     private List<MapSourceRecordResponse> sources;
+    private List<MapSourceRecordResponse> sourceRecords;
 }
