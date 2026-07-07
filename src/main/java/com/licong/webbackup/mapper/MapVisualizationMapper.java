@@ -139,8 +139,8 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category != '全部目标物质类别'
               AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
-              AND subcategory = #{subcategory}
-              AND biomarker_key = #{biomarkerKey}
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
               AND year_label = #{year}
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
@@ -300,8 +300,8 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category != '全部目标物质类别'
               AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
-              AND subcategory = #{subcategory}
-              AND biomarker_key = #{biomarkerKey}
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
               AND year_label = #{year}
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL

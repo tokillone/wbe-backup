@@ -539,7 +539,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
 
     private MapRegionStatResponse mergeRegionGroup(List<MapRegionStatResponse> group,
                                                    MapFilterSelectionResponse selection) {
-        MapRegionStatResponse first = group.get(0);
+        List<MapRegionStatResponse> aggregationRows = preferredFallbackRows(group, selection);
+        MapRegionStatResponse first = aggregationRows.get(0);
         MapRegionStatResponse merged = new MapRegionStatResponse();
         merged.setLevel(first.getLevel());
         merged.setGeoKey(first.getGeoKey());
@@ -556,19 +557,41 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         merged.setBiomarkerLabel(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? "全部 biomarker" : first.getBiomarkerLabel());
         merged.setBiomarkerCas(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? null : first.getBiomarkerCas());
         merged.setYearLabel(selection.getYear());
-        merged.setPndlGeomeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlGeomeanMgD1000inh));
-        merged.setPndlMeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlMeanMgD1000inh));
-        merged.setPndlMinMgD1000inh(group.stream().map(MapRegionStatResponse::getPndlMinMgD1000inh).filter(Objects::nonNull)
+        merged.setPndlGeomeanMgD1000inh(weightedAverage(aggregationRows, MapRegionStatResponse::getPndlGeomeanMgD1000inh));
+        merged.setPndlMeanMgD1000inh(weightedAverage(aggregationRows, MapRegionStatResponse::getPndlMeanMgD1000inh));
+        merged.setPndlMinMgD1000inh(aggregationRows.stream().map(MapRegionStatResponse::getPndlMinMgD1000inh).filter(Objects::nonNull)
                 .min(BigDecimal::compareTo).orElse(null));
-        merged.setPndlMaxMgD1000inh(group.stream().map(MapRegionStatResponse::getPndlMaxMgD1000inh).filter(Objects::nonNull)
+        merged.setPndlMaxMgD1000inh(aggregationRows.stream().map(MapRegionStatResponse::getPndlMaxMgD1000inh).filter(Objects::nonNull)
                 .max(BigDecimal::compareTo).orElse(null));
-        merged.setRecordCount(sumLong(group, MapRegionStatResponse::getRecordCount));
-        merged.setDoiCount(sumLong(group, MapRegionStatResponse::getDoiCount));
-        merged.setYearCount(maxLong(group, MapRegionStatResponse::getYearCount));
-        merged.setCityCount(sumLong(group, MapRegionStatResponse::getCityCount));
-        merged.setPointCount(sumLong(group, MapRegionStatResponse::getPointCount));
+        merged.setRecordCount(sumLong(aggregationRows, MapRegionStatResponse::getRecordCount));
+        merged.setDoiCount(sumLong(aggregationRows, MapRegionStatResponse::getDoiCount));
+        merged.setYearCount(maxLong(aggregationRows, MapRegionStatResponse::getYearCount));
+        merged.setCityCount(sumLong(aggregationRows, MapRegionStatResponse::getCityCount));
+        merged.setPointCount(sumLong(aggregationRows, MapRegionStatResponse::getPointCount));
         merged.setPndlSources("多类别合并显示");
         return merged;
+    }
+
+    private List<MapRegionStatResponse> preferredFallbackRows(List<MapRegionStatResponse> rows,
+                                                              MapFilterSelectionResponse selection) {
+        List<MapRegionStatResponse> preferred = rows;
+        if (ALL_SUBCATEGORY.equals(selection.getSubcategory())) {
+            List<MapRegionStatResponse> subcategoryAggregates = preferred.stream()
+                    .filter(row -> ALL_SUBCATEGORY.equals(row.getSubcategory()))
+                    .toList();
+            if (!subcategoryAggregates.isEmpty()) {
+                preferred = subcategoryAggregates;
+            }
+        }
+        if (ALL_BIOMARKERS.equals(selection.getBiomarkerKey())) {
+            List<MapRegionStatResponse> biomarkerAggregates = preferred.stream()
+                    .filter(row -> ALL_BIOMARKERS.equals(row.getBiomarkerKey()))
+                    .toList();
+            if (!biomarkerAggregates.isEmpty()) {
+                preferred = biomarkerAggregates;
+            }
+        }
+        return preferred.isEmpty() ? rows : preferred;
     }
 
     private BigDecimal weightedAverage(List<MapRegionStatResponse> rows,

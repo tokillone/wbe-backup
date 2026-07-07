@@ -50,8 +50,8 @@ class MapVisualizationServiceImplTest {
                 eq("全部年份"),
                 any()))
                 .thenReturn(List.of(
-                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "10", 3),
-                        stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "20", 7)
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "尼古丁代谢物", "COTININE", "10", 3),
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "大环内酯", "AZITHROMYCIN", "20", 7)
                 ));
 
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
@@ -75,7 +75,16 @@ class MapVisualizationServiceImplTest {
         return row;
     }
 
-    private MapRegionStatResponse stat(String level, String geoKey, String name, String category, String pndl, long records) {
+    private MapRegionStatResponse stat(
+            String level,
+            String geoKey,
+            String name,
+            String category,
+            String subcategory,
+            String biomarkerKey,
+            String pndl,
+            long records
+    ) {
         MapRegionStatResponse row = new MapRegionStatResponse();
         row.setLevel(level);
         row.setGeoKey(geoKey);
@@ -86,9 +95,9 @@ class MapVisualizationServiceImplTest {
         row.setLatitude(new BigDecimal("29.8683"));
         row.setLongitude(new BigDecimal("121.5440"));
         row.setCategory(category);
-        row.setSubcategory("全部小类");
-        row.setBiomarkerKey("ALL");
-        row.setBiomarkerLabel("全部 biomarker");
+        row.setSubcategory(subcategory);
+        row.setBiomarkerKey(biomarkerKey);
+        row.setBiomarkerLabel(biomarkerKey);
         row.setYearLabel("全部年份");
         row.setPndlGeomeanMgD1000inh(new BigDecimal(pndl));
         row.setPndlMeanMgD1000inh(new BigDecimal(pndl));
