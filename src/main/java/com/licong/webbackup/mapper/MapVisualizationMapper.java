@@ -81,7 +81,7 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -194,7 +194,7 @@ public interface MapVisualizationMapper {
               AND geo_key = #{geoKey}
               AND category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -241,7 +241,7 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -355,7 +355,7 @@ public interface MapVisualizationMapper {
             WHERE level = #{level}
               AND category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}

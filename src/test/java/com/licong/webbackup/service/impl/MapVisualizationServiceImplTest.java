@@ -14,6 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class MapVisualizationServiceImplTest {
@@ -30,6 +32,35 @@ class MapVisualizationServiceImplTest {
         assertThat(filters.getCategoriesByTargetClass().get("抗生素")).startsWith("全部目标物质类别");
         assertThat(filters.getDefaultSelection().getCategory()).isEqualTo("全部目标物质类别");
         assertThat(filters.getDefaultSelection().getSubcategory()).isEqualTo("全部小类");
+    }
+
+    @Test
+    void allCategoryStatsUseExactAggregateWhenAvailable() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse exact = stat(
+                "city",
+                "china|zhejiang|ningbo",
+                "宁波市",
+                "全部目标物质类别",
+                "全部小类",
+                "ALL",
+                "18",
+                5);
+        when(mapper.findStats(
+                eq("全部目标物质类别"),
+                eq("ALL"),
+                eq("全部小类"),
+                eq("ALL"),
+                eq("全部年份"),
+                any()))
+                .thenReturn(List.of(exact));
+
+        MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
+        MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
+
+        assertThat(stats.getRegions()).containsExactly(exact);
+        assertThat(stats.getPoints()).containsExactly(exact);
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any());
     }
 
     @Test
