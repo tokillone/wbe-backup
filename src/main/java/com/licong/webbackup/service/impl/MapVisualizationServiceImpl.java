@@ -11,6 +11,7 @@ import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapFilterSelectionResponse;
 import com.licong.webbackup.dto.map.MapLegendResponse;
+import com.licong.webbackup.dto.map.MapPndlComparisonResponse;
 import com.licong.webbackup.dto.map.MapPndlRankingItemResponse;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
@@ -18,6 +19,8 @@ import com.licong.webbackup.dto.map.MapStatsResponse;
 import com.licong.webbackup.dto.map.MapSummaryCardResponse;
 import com.licong.webbackup.dto.map.MapSummaryResponse;
 import com.licong.webbackup.dto.map.MapTopBiomarkerResponse;
+import com.licong.webbackup.dto.map.MapTrendPointResponse;
+import com.licong.webbackup.dto.map.MapTrendSeriesResponse;
 import com.licong.webbackup.mapper.MapVisualizationMapper;
 import com.licong.webbackup.service.MapVisualizationService;
 import org.springframework.stereotype.Service;
@@ -49,6 +52,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final int DETAIL_SOURCE_LIMIT = 20;
     private static final int CLUSTER_LOCATION_LIMIT = 120;
     private static final int FULL_DETAIL_LIMIT = 40;
+    private static final int COMPARISON_LIMIT = 30;
+    private static final String PNDL_UNIT = "mg/day/1000 inh";
 
     private final MapVisualizationMapper mapVisualizationMapper;
 
@@ -170,13 +175,14 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLevels);
-        if (regions.isEmpty() && ALL_CATEGORIES.equals(selection.getCategory())) {
-            regions = mergeAnyCategoryStats(mapVisualizationMapper.findStatsForAnyCategory(
+        if (shouldUseAnyCategoryFallback(regions, selection)) {
+            List<MapRegionStatResponse> fallbackRegions = mergeAnyCategoryStats(mapVisualizationMapper.findStatsForAnyCategory(
                     selection.getTargetClass(),
                     selection.getSubcategory(),
                     selection.getBiomarkerKey(),
                     selection.getYear(),
                     requestedLevels), selection);
+            regions = fallbackRegions.isEmpty() && hasMappablePoints(regions) ? regions : fallbackRegions;
         }
         List<MapRegionStatResponse> points = regions.stream()
                 .filter(row -> row.getLatitude() != null && row.getLongitude() != null)
@@ -205,7 +211,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear());
         MapClusterLocationRequest location = clusterLocation(normalizedLevel, geoKey);
-        if (region == null && ALL_CATEGORIES.equals(selection.getCategory())) {
+        if ((region == null || !hasMappablePoints(List.of(region))) && ALL_CATEGORIES.equals(selection.getCategory())) {
             List<MapRegionStatResponse> merged = mergeAnyCategoryStats(
                     mapVisualizationMapper.findRegionsByKeysForAnyCategory(
                             selection.getTargetClass(),
@@ -248,6 +254,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .summaryCards(List.of())
                     .topBiomarkers(List.of())
                     .pndlRanking(List.of())
+                    .pndlComparisons(List.of())
+                    .trendSeries(List.of())
                     .categoryBreakdown(List.of())
                     .sources(List.of())
                     .sourceRecords(List.of())
@@ -260,7 +268,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLocations);
-        if (regions.isEmpty() && ALL_CATEGORIES.equals(selection.getCategory())) {
+        if (shouldUseAnyCategoryFallback(regions, selection)) {
             regions = mergeAnyCategoryStats(mapVisualizationMapper.findRegionsByKeysForAnyCategory(
                     selection.getTargetClass(),
                     selection.getSubcategory(),
@@ -305,6 +313,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         List<MapPndlRankingItemResponse> ranking = cluster
                 ? buildClusterRanking(safeRegions)
                 : buildRegionRanking(region, selection);
+        List<MapPndlComparisonResponse> comparisons = cluster
+                ? buildClusterComparisons(safeRegions, selection)
+                : buildRegionComparisons(region, selection);
+        List<MapTrendSeriesResponse> trendSeries = cluster
+                ? List.of()
+                : buildTrendSeries(region, selection);
         return MapDetailResponse.builder()
                 .title(cluster ? "PNDL 聚合详情" : (region == null ? "PNDL 详情" : region.getDisplayName()))
                 .subtitle(cluster ? buildClusterSubtitle(safeRegions, selection) : buildRegionSubtitle(region, selection))
@@ -314,6 +328,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .summaryCards(buildSummaryCards(region, safeRegions, cluster))
                 .topBiomarkers(topBiomarkers)
                 .pndlRanking(ranking)
+                .pndlComparisons(comparisons)
+                .trendSeries(trendSeries)
                 .categoryBreakdown(categoryBreakdown)
                 .sources(safeSources)
                 .sourceRecords(safeSources)
@@ -385,6 +401,23 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 12);
+        if (rankingRows.isEmpty() && ALL_CATEGORIES.equals(selection.getCategory())) {
+            rankingRows = mergeAnyCategoryStats(mapVisualizationMapper.findRankingStatsForAnyCategory(
+                    region.getLevel(),
+                    selection.getTargetClass(),
+                    selection.getSubcategory(),
+                    selection.getBiomarkerKey(),
+                    selection.getYear(),
+                    50), selection).stream()
+                    .sorted(Comparator
+                            .comparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                                    Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(MapRegionStatResponse::getRecordCount,
+                                    Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(MapRegionStatResponse::getDisplayName, Comparator.nullsLast(String::compareTo)))
+                    .limit(12)
+                    .toList();
+        }
         return toRankingItems(rankingRows, region.getLevel() + "|" + region.getGeoKey());
     }
 
@@ -399,6 +432,194 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .limit(12)
                 .toList();
         return toRankingItems(rankingRows, "");
+    }
+
+    private List<MapPndlComparisonResponse> buildClusterComparisons(List<MapRegionStatResponse> regions,
+                                                                    MapFilterSelectionResponse selection) {
+        if (ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) || regions == null || regions.isEmpty()) {
+            return List.of();
+        }
+        List<MapPndlRankingItemResponse> rows = buildClusterRanking(regions);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        return List.of(MapPndlComparisonResponse.builder()
+                .key("cluster")
+                .label("聚合内位置对比")
+                .scopeLevel("cluster")
+                .unit(PNDL_UNIT)
+                .note("聚合气泡包含的位置横向比较")
+                .selectedRegionId(null)
+                .highlightSelected(false)
+                .rows(rows)
+                .build());
+    }
+
+    private List<MapPndlComparisonResponse> buildRegionComparisons(MapRegionStatResponse region,
+                                                                   MapFilterSelectionResponse selection) {
+        if (region == null || ALL_BIOMARKERS.equals(selection.getBiomarkerKey())) {
+            return List.of();
+        }
+        List<MapPndlComparisonResponse> comparisons = new ArrayList<>();
+        String currentRegionId = regionId(region);
+        String countryKey = countryKey(region.getGeoKey());
+        String parentKey = valueOr(region.getParentGeoKey(), "");
+        boolean inChina = isChinaKey(countryKey) || isChinaKey(region.getGeoKey());
+
+        switch (region.getLevel()) {
+            case "country" -> {
+                addComparison(comparisons, "country", "国家横向比较", "country",
+                        null, currentRegionId, true, "全球国家层面 PNDL 横向比较", selection);
+                addComparison(comparisons, "admin1", isChinaKey(region.getGeoKey()) ? "中国省份横向比较" : "本国省/州比较",
+                        "admin1", prefixFor(region.getGeoKey()), null, false,
+                        "当前国家下一级行政区比较", selection);
+                if (isChinaKey(region.getGeoKey())) {
+                    addComparison(comparisons, "china-city", "中国城市比较", "city",
+                            prefixFor(region.getGeoKey()), null, false,
+                            "中国城市层面 PNDL 比较", selection);
+                }
+            }
+            case "admin1" -> {
+                addComparison(comparisons, "admin1", inChina ? "中国省份横向比较" : "同国省/州比较",
+                        "admin1", prefixFor(countryKey), currentRegionId, true,
+                        "同一国家省/州层面 PNDL 横向比较", selection);
+                addComparison(comparisons, "country", "返回国家比较", "country",
+                        null, "country|" + countryKey, true,
+                        "国家层面 PNDL 横向比较", selection);
+                if (inChina) {
+                    addComparison(comparisons, "china-city", "中国城市比较", "city",
+                            prefixFor(countryKey), null, false,
+                            "中国城市层面 PNDL 比较；该模式不高亮当前省份", selection);
+                }
+            }
+            case "city" -> {
+                addComparison(comparisons, "city", inChina ? "中国城市横向比较" : "城市横向比较",
+                        "city", prefixFor(countryKey), currentRegionId, true,
+                        "城市层面 PNDL 横向比较", selection);
+                if (StringUtils.hasText(parentKey)) {
+                    addComparison(comparisons, "parent-city", "所属省/州内城市比较", "city",
+                            prefixFor(parentKey), currentRegionId, true,
+                            "同一省/州内城市 PNDL 比较", selection);
+                }
+                addComparison(comparisons, "country", "返回国家比较", "country",
+                        null, "country|" + countryKey, true,
+                        "国家层面 PNDL 横向比较", selection);
+            }
+            default -> {
+            }
+        }
+        return comparisons;
+    }
+
+    private void addComparison(List<MapPndlComparisonResponse> comparisons,
+                               String key,
+                               String label,
+                               String level,
+                               String geoKeyPrefix,
+                               String selectedRegionId,
+                               boolean highlightSelected,
+                               String note,
+                               MapFilterSelectionResponse selection) {
+        List<MapPndlRankingItemResponse> rows = comparisonRows(level, geoKeyPrefix, selectedRegionId,
+                highlightSelected, selection);
+        if (rows.isEmpty()) {
+            return;
+        }
+        comparisons.add(MapPndlComparisonResponse.builder()
+                .key(key)
+                .label(label)
+                .scopeLevel(level)
+                .unit(PNDL_UNIT)
+                .note(note)
+                .selectedRegionId(selectedRegionId)
+                .highlightSelected(highlightSelected)
+                .rows(rows)
+                .build());
+    }
+
+    private List<MapPndlRankingItemResponse> comparisonRows(String level,
+                                                            String geoKeyPrefix,
+                                                            String selectedRegionId,
+                                                            boolean highlightSelected,
+                                                            MapFilterSelectionResponse selection) {
+        List<MapRegionStatResponse> rows = mapVisualizationMapper.findComparisonStats(
+                level,
+                geoKeyPrefix,
+                selection.getCategory(),
+                selection.getTargetClass(),
+                selection.getSubcategory(),
+                selection.getBiomarkerKey(),
+                selection.getYear(),
+                COMPARISON_LIMIT * 3);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<MapRegionStatResponse> normalizedRows = needsSelectionMerge(selection)
+                ? mergeAnyCategoryStats(rows, selection)
+                : rows;
+        List<MapRegionStatResponse> rankingRows = normalizedRows.stream()
+                .sorted(Comparator
+                        .comparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(MapRegionStatResponse::getRecordCount,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(MapRegionStatResponse::getDisplayName, Comparator.nullsLast(String::compareTo)))
+                .limit(COMPARISON_LIMIT)
+                .toList();
+        return toRankingItems(rankingRows, highlightSelected ? selectedRegionId : "");
+    }
+
+    private List<MapTrendSeriesResponse> buildTrendSeries(MapRegionStatResponse region,
+                                                          MapFilterSelectionResponse selection) {
+        if (region == null || ALL_BIOMARKERS.equals(selection.getBiomarkerKey())) {
+            return List.of();
+        }
+        List<MapTrendPointResponse> points = mapVisualizationMapper.findPndlTrend(
+                region.getLevel(),
+                region.getGeoKey(),
+                selection.getCategory(),
+                selection.getTargetClass(),
+                selection.getSubcategory(),
+                selection.getBiomarkerKey());
+        if (points.size() < 2) {
+            return List.of();
+        }
+        return List.of(MapTrendSeriesResponse.builder()
+                .metricKey("pndl")
+                .label("PNDL年度趋势")
+                .unit(PNDL_UNIT)
+                .points(points)
+                .build());
+    }
+
+    private boolean needsSelectionMerge(MapFilterSelectionResponse selection) {
+        return ALL_CATEGORIES.equals(selection.getCategory())
+                || ALL_SUBCATEGORY.equals(selection.getSubcategory())
+                || ALL_BIOMARKERS.equals(selection.getBiomarkerKey())
+                || ALL_YEARS.equals(selection.getYear());
+    }
+
+    private String regionId(MapRegionStatResponse region) {
+        if (region == null) {
+            return "";
+        }
+        return region.getLevel() + "|" + region.getGeoKey();
+    }
+
+    private String countryKey(String geoKey) {
+        if (!StringUtils.hasText(geoKey)) {
+            return "";
+        }
+        int separator = geoKey.indexOf('|');
+        return separator > 0 ? geoKey.substring(0, separator) : geoKey;
+    }
+
+    private String prefixFor(String geoKey) {
+        return StringUtils.hasText(geoKey) ? geoKey + "|" : "";
+    }
+
+    private boolean isChinaKey(String geoKey) {
+        return StringUtils.hasText(geoKey) && "china".equalsIgnoreCase(geoKey.trim());
     }
 
     private List<MapPndlRankingItemResponse> toRankingItems(List<MapRegionStatResponse> rows, String selectedRegionId) {
@@ -515,6 +736,17 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             return fallback;
         }
         return Math.min(value, max);
+    }
+
+    private boolean shouldUseAnyCategoryFallback(List<MapRegionStatResponse> regions,
+                                                 MapFilterSelectionResponse selection) {
+        return ALL_CATEGORIES.equals(selection.getCategory())
+                && (regions == null || regions.isEmpty() || !hasMappablePoints(regions));
+    }
+
+    private boolean hasMappablePoints(List<MapRegionStatResponse> regions) {
+        return regions != null && regions.stream()
+                .anyMatch(row -> row.getLatitude() != null && row.getLongitude() != null);
     }
 
     private List<MapRegionStatResponse> mergeAnyCategoryStats(List<MapRegionStatResponse> rows,

@@ -6,6 +6,7 @@ import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapTopBiomarkerResponse;
+import com.licong.webbackup.dto.map.MapTrendPointResponse;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -137,8 +138,8 @@ public interface MapVisualizationMapper {
               point_count,
               pndl_sources
             FROM map_pndl_stats
-            WHERE category != '全部目标物质类别'
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+            WHERE (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
               AND (#{year} = '全部年份' OR year_label = #{year})
@@ -298,8 +299,8 @@ public interface MapVisualizationMapper {
               point_count,
               pndl_sources
             FROM map_pndl_stats
-            WHERE category != '全部目标物质类别'
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+            WHERE (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
               AND (#{year} = '全部年份' OR year_label = #{year})
@@ -375,6 +376,139 @@ public interface MapVisualizationMapper {
                                                   @Param("limit") int limit);
 
     @Select("""
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE level = #{level}
+              AND (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
+              AND (#{year} = '全部年份' OR year_label = #{year})
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+            ORDER BY pndl_geomean_mg_d_1000inh DESC, record_count DESC, display_name ASC
+            LIMIT #{limit}
+            """)
+    List<MapRegionStatResponse> findRankingStatsForAnyCategory(@Param("level") String level,
+                                                                @Param("targetClass") String targetClass,
+                                                                @Param("subcategory") String subcategory,
+                                                                @Param("biomarkerKey") String biomarkerKey,
+                                                                @Param("year") String year,
+                                                                @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT
+              level,
+              geo_key,
+              parent_geo_key,
+              display_name,
+              country,
+              province,
+              city,
+              latitude,
+              longitude,
+              category,
+              subcategory,
+              biomarker_key,
+              biomarker_label,
+              biomarker_cas,
+              year_label,
+              pndl_geomean_mg_d_1000inh,
+              pndl_mean_mg_d_1000inh,
+              pndl_min_mg_d_1000inh,
+              pndl_max_mg_d_1000inh,
+              record_count,
+              doi_count,
+              year_count,
+              city_count,
+              point_count,
+              pndl_sources
+            FROM map_pndl_stats
+            WHERE level = #{level}
+              AND (
+                (#{category} = '全部目标物质类别' AND (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别'))
+                OR (#{category} != '全部目标物质类别' AND category = #{category})
+              )
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
+              AND (#{year} = '全部年份' OR year_label = #{year})
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+              <if test="geoKeyPrefix != null and geoKeyPrefix != ''">
+                AND geo_key LIKE CONCAT(#{geoKeyPrefix}, '%')
+              </if>
+            ORDER BY pndl_geomean_mg_d_1000inh DESC, record_count DESC, display_name ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MapRegionStatResponse> findComparisonStats(@Param("level") String level,
+                                                     @Param("geoKeyPrefix") String geoKeyPrefix,
+                                                     @Param("category") String category,
+                                                     @Param("targetClass") String targetClass,
+                                                     @Param("subcategory") String subcategory,
+                                                     @Param("biomarkerKey") String biomarkerKey,
+                                                     @Param("year") String year,
+                                                     @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT
+              CAST(year_label AS UNSIGNED) AS year,
+              SUM(pndl_geomean_mg_d_1000inh * CASE WHEN record_count IS NULL OR record_count &lt;= 0 THEN 1 ELSE record_count END)
+                / SUM(CASE WHEN record_count IS NULL OR record_count &lt;= 0 THEN 1 ELSE record_count END) AS value,
+              SUM(record_count) AS record_count
+            FROM map_pndl_stats
+            WHERE level = #{level}
+              AND geo_key = #{geoKey}
+              AND year_label REGEXP '^[0-9]{4}$'
+              AND (
+                (#{category} = '全部目标物质类别' AND (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别'))
+                OR (#{category} != '全部目标物质类别' AND category = #{category})
+              )
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
+              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
+              AND biomarker_key = #{biomarkerKey}
+              AND is_mappable = TRUE
+              AND pndl_geomean_mg_d_1000inh IS NOT NULL
+            GROUP BY CAST(year_label AS UNSIGNED)
+            ORDER BY CAST(year_label AS UNSIGNED)
+            </script>
+            """)
+    List<MapTrendPointResponse> findPndlTrend(@Param("level") String level,
+                                              @Param("geoKey") String geoKey,
+                                              @Param("category") String category,
+                                              @Param("targetClass") String targetClass,
+                                              @Param("subcategory") String subcategory,
+                                              @Param("biomarkerKey") String biomarkerKey);
+
+    @Select("""
             <script>
             SELECT
               biomarker_key,
@@ -387,10 +521,10 @@ public interface MapVisualizationMapper {
               SUM(point_count) AS point_count,
               TRUE AS has_pndl
             FROM map_pndl_stats
-            WHERE category != '全部目标物质类别'
+            WHERE (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
               AND (#{category} = '全部目标物质类别' OR category = #{category})
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
-              AND subcategory != '全部小类'
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
+              AND (subcategory IS NULL OR TRIM(subcategory) = '' OR subcategory != '全部小类')
               AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
               AND biomarker_key != 'ALL'
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
@@ -420,14 +554,13 @@ public interface MapVisualizationMapper {
     @Select("""
             <script>
             SELECT
-              category AS label,
+              COALESCE(NULLIF(TRIM(category), ''), '未分类') AS label,
               SUM(record_count) AS record_count
             FROM map_pndl_stats
-            WHERE category != '全部目标物质类别'
+            WHERE (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
               AND (#{category} = '全部目标物质类别' OR category = #{category})
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
-              AND subcategory = '全部小类'
-              AND biomarker_key = 'ALL'
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
+              AND (biomarker_key IS NULL OR biomarker_key != 'ALL')
               AND (#{year} = '全部年份' OR year_label = #{year})
               AND is_mappable = TRUE
               AND pndl_geomean_mg_d_1000inh IS NOT NULL
@@ -438,8 +571,8 @@ public interface MapVisualizationMapper {
                 </foreach>
                 )
               </if>
-            GROUP BY category
-            ORDER BY SUM(record_count) DESC, category ASC
+            GROUP BY COALESCE(NULLIF(TRIM(category), ''), '未分类')
+            ORDER BY SUM(record_count) DESC, label ASC
             LIMIT #{limit}
             </script>
             """)
