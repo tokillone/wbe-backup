@@ -184,7 +184,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     selection.getBiomarkerKey(),
                     selection.getYear(),
                     requestedLevels), selection);
-            regions = fallbackRegions.isEmpty() && hasUsableMappableStats(regions) ? regions : fallbackRegions;
+            if (!fallbackRegions.isEmpty()) {
+                regions = fallbackRegions;
+            }
         }
         List<MapRegionStatResponse> points = regions.stream()
                 .filter(row -> row.getLatitude() != null && row.getLongitude() != null)
@@ -223,7 +225,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                             selection.getYear(),
                             List.of(location)),
                     selection);
-            region = merged.isEmpty() ? null : merged.get(0);
+            if (!merged.isEmpty()) {
+                region = merged.get(0);
+            }
         }
         List<MapSourceRecordResponse> sources = mapVisualizationMapper.findSourceRecords(
                 normalizedLevel,
@@ -272,13 +276,16 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getYear(),
                 requestedLocations);
         if (shouldUseAnyCategoryFallback(regions, selection)) {
-            regions = mergeAnyCategoryStats(mapVisualizationMapper.findRegionsByKeysForAnyCategory(
+            List<MapRegionStatResponse> fallbackRegions = mergeAnyCategoryStats(mapVisualizationMapper.findRegionsByKeysForAnyCategory(
                     selection.getCategory(),
                     selection.getTargetClass(),
                     selection.getSubcategory(),
                     selection.getBiomarkerKey(),
                     selection.getYear(),
                     requestedLocations), selection);
+            if (!fallbackRegions.isEmpty()) {
+                regions = fallbackRegions;
+            }
         }
         List<MapSourceRecordResponse> sources = collectSourceRecords(
                 requestedLocations,
@@ -804,7 +811,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                         (map, row) -> map.computeIfAbsent(row.getLevel() + "|" + row.getGeoKey(), ignored -> new ArrayList<>()).add(row),
                         Map::putAll);
         return grouped.values().stream()
-                .map(group -> mergeRegionGroup(group, selection))
+                .map(group -> mergeRegionGroup(mostConcreteFallbackRows(group, selection), selection))
                 .sorted(Comparator
                         .comparing(MapRegionStatResponse::getLevel, Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
@@ -817,20 +824,82 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         if (row == null) {
             return false;
         }
-        if (ALL_CATEGORIES.equals(selection.getCategory())
-                && (!StringUtils.hasText(row.getCategory()) || ALL_CATEGORIES.equals(row.getCategory()))) {
+        if (!hasMeaningfulStats(row)) {
             return false;
+        }
+        boolean hasConcreteDimension = false;
+        if (ALL_CATEGORIES.equals(selection.getCategory())
+                && StringUtils.hasText(row.getCategory())
+                && !ALL_CATEGORIES.equals(row.getCategory())) {
+            hasConcreteDimension = true;
         }
         if (ALL_SUBCATEGORY.equals(selection.getSubcategory())
-                && (!StringUtils.hasText(row.getSubcategory()) || ALL_SUBCATEGORY.equals(row.getSubcategory()))) {
-            return false;
+                && StringUtils.hasText(row.getSubcategory())
+                && !ALL_SUBCATEGORY.equals(row.getSubcategory())) {
+            hasConcreteDimension = true;
         }
         if (ALL_BIOMARKERS.equals(selection.getBiomarkerKey())
-                && (!StringUtils.hasText(row.getBiomarkerKey()) || ALL_BIOMARKERS.equals(row.getBiomarkerKey()))) {
-            return false;
+                && StringUtils.hasText(row.getBiomarkerKey())
+                && !ALL_BIOMARKERS.equals(row.getBiomarkerKey())) {
+            hasConcreteDimension = true;
         }
-        return !ALL_YEARS.equals(selection.getYear())
-                || (StringUtils.hasText(row.getYearLabel()) && !ALL_YEARS.equals(row.getYearLabel()));
+        if (ALL_YEARS.equals(selection.getYear())
+                && StringUtils.hasText(row.getYearLabel())
+                && !ALL_YEARS.equals(row.getYearLabel())) {
+            hasConcreteDimension = true;
+        }
+        return hasConcreteDimension || !isFullyAllSelection(selection);
+    }
+
+    private List<MapRegionStatResponse> mostConcreteFallbackRows(List<MapRegionStatResponse> group,
+                                                                 MapFilterSelectionResponse selection) {
+        int maxScore = group.stream()
+                .mapToInt(row -> fallbackConcretenessScore(row, selection))
+                .max()
+                .orElse(0);
+        return group.stream()
+                .filter(row -> fallbackConcretenessScore(row, selection) == maxScore)
+                .toList();
+    }
+
+    private int fallbackConcretenessScore(MapRegionStatResponse row, MapFilterSelectionResponse selection) {
+        int score = 0;
+        if (ALL_CATEGORIES.equals(selection.getCategory())
+                && StringUtils.hasText(row.getCategory())
+                && !ALL_CATEGORIES.equals(row.getCategory())) {
+            score++;
+        }
+        if (ALL_SUBCATEGORY.equals(selection.getSubcategory())
+                && StringUtils.hasText(row.getSubcategory())
+                && !ALL_SUBCATEGORY.equals(row.getSubcategory())) {
+            score++;
+        }
+        if (ALL_BIOMARKERS.equals(selection.getBiomarkerKey())
+                && StringUtils.hasText(row.getBiomarkerKey())
+                && !ALL_BIOMARKERS.equals(row.getBiomarkerKey())) {
+            score++;
+        }
+        if (ALL_YEARS.equals(selection.getYear())
+                && StringUtils.hasText(row.getYearLabel())
+                && !ALL_YEARS.equals(row.getYearLabel())) {
+            score++;
+        }
+        return score;
+    }
+
+    private boolean isFullyAllSelection(MapFilterSelectionResponse selection) {
+        return ALL_CATEGORIES.equals(selection.getCategory())
+                && ALL_SUBCATEGORY.equals(selection.getSubcategory())
+                && ALL_BIOMARKERS.equals(selection.getBiomarkerKey())
+                && ALL_YEARS.equals(selection.getYear());
+    }
+
+    private boolean hasMeaningfulStats(MapRegionStatResponse row) {
+        return hasPositiveCount(row.getRecordCount())
+                || hasPositiveCount(row.getDoiCount())
+                || hasPositiveCount(row.getPointCount())
+                || (row.getPndlGeomeanMgD1000inh() != null
+                && row.getPndlGeomeanMgD1000inh().compareTo(BigDecimal.ZERO) > 0);
     }
 
     private MapRegionStatResponse mergeRegionGroup(List<MapRegionStatResponse> group,

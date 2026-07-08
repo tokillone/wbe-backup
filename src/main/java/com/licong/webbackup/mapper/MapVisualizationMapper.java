@@ -141,30 +141,26 @@ public interface MapVisualizationMapper {
             WHERE (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND (
                 (#{biomarkerKey} = 'ALL'
                   AND biomarker_key IS NOT NULL
-                  AND TRIM(biomarker_key) != ''
-                  AND biomarker_key != 'ALL')
+                  AND TRIM(biomarker_key) != '')
                 OR (#{biomarkerKey} != 'ALL' AND biomarker_key = #{biomarkerKey})
               )
               AND (
                 (#{year} = '全部年份'
                   AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND TRIM(year_label) != '')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -327,30 +323,26 @@ public interface MapVisualizationMapper {
             WHERE (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND (
                 (#{biomarkerKey} = 'ALL'
                   AND biomarker_key IS NOT NULL
-                  AND TRIM(biomarker_key) != ''
-                  AND biomarker_key != 'ALL')
+                  AND TRIM(biomarker_key) != '')
                 OR (#{biomarkerKey} != 'ALL' AND biomarker_key = #{biomarkerKey})
               )
               AND (
                 (#{year} = '全部年份'
                   AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND TRIM(year_label) != '')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -457,30 +449,26 @@ public interface MapVisualizationMapper {
               AND (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND (
                 (#{biomarkerKey} = 'ALL'
                   AND biomarker_key IS NOT NULL
-                  AND TRIM(biomarker_key) != ''
-                  AND biomarker_key != 'ALL')
+                  AND TRIM(biomarker_key) != '')
                 OR (#{biomarkerKey} != 'ALL' AND biomarker_key = #{biomarkerKey})
               )
               AND (
                 (#{year} = '全部年份'
                   AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND TRIM(year_label) != '')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -529,30 +517,26 @@ public interface MapVisualizationMapper {
               AND (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND (
                 (#{biomarkerKey} = 'ALL'
                   AND biomarker_key IS NOT NULL
-                  AND TRIM(biomarker_key) != ''
-                  AND biomarker_key != 'ALL')
+                  AND TRIM(biomarker_key) != '')
                 OR (#{biomarkerKey} != 'ALL' AND biomarker_key = #{biomarkerKey})
               )
               AND (
                 (#{year} = '全部年份'
                   AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND TRIM(year_label) != '')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -606,30 +590,26 @@ public interface MapVisualizationMapper {
               AND (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND (
                 (#{biomarkerKey} = 'ALL'
                   AND biomarker_key IS NOT NULL
-                  AND TRIM(biomarker_key) != ''
-                  AND biomarker_key != 'ALL')
+                  AND TRIM(biomarker_key) != '')
                 OR (#{biomarkerKey} != 'ALL' AND biomarker_key = #{biomarkerKey})
               )
               AND (
                 (#{year} = '全部年份'
                   AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND TRIM(year_label) != '')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -668,16 +648,14 @@ public interface MapVisualizationMapper {
               AND (
                 (#{category} = '全部目标物质类别'
                   AND category IS NOT NULL
-                  AND TRIM(category) != ''
-                  AND category != '全部目标物质类别')
+                  AND TRIM(category) != '')
                 OR (#{category} != '全部目标物质类别' AND category = #{category})
               )
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
               AND (
                 (#{subcategory} = '全部小类'
                   AND subcategory IS NOT NULL
-                  AND TRIM(subcategory) != ''
-                  AND subcategory != '全部小类')
+                  AND TRIM(subcategory) != '')
                 OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
               AND biomarker_key = #{biomarkerKey}
