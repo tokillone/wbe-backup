@@ -139,6 +139,38 @@ class MapVisualizationServiceImplTest {
     }
 
     @Test
+    void allCategoryStatsAcceptDisplayAllShorthand() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        when(mapper.findStats(
+                eq("全部目标物质类别"),
+                eq("ALL"),
+                eq("全部小类"),
+                eq("ALL"),
+                eq("全部年份"),
+                any()))
+                .thenReturn(List.of());
+        when(mapper.findStatsForAnyCategory(
+                eq("全部目标物质类别"),
+                eq("ALL"),
+                eq("全部小类"),
+                eq("ALL"),
+                eq("全部年份"),
+                any()))
+                .thenReturn(List.of(
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "尼古丁代谢物", "COTININE", "2022", "10", 3)
+                ));
+
+        MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
+        MapStatsResponse stats = service.getStats("全部", "全部", "全部", "全部", "全部", "city");
+
+        assertThat(stats.getRegions()).hasSize(1);
+        assertThat(stats.getRegions().get(0).getCategory()).isEqualTo("全部目标物质类别");
+        assertThat(stats.getRegions().get(0).getSubcategory()).isEqualTo("全部小类");
+        assertThat(stats.getRegions().get(0).getBiomarkerKey()).isEqualTo("ALL");
+        assertThat(stats.getRegions().get(0).getYearLabel()).isEqualTo("全部年份");
+    }
+
+    @Test
     void allCategoryStatsFallBackToMergedConcreteYears() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(

@@ -46,6 +46,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final String ALL_YEARS = "全部年份";
     private static final String ALL_TARGET_CLASSES = "ALL";
     private static final String ALL_CATEGORIES = "全部目标物质类别";
+    private static final String ALL_DISPLAY_VALUE = "全部";
     private static final List<String> DEFAULT_LEVELS = List.of("country", "admin1", "city");
     private static final Set<String> VALID_LEVELS = Set.of("country", "admin1", "city");
     private static final List<String> LEGEND_COLORS = List.of("#fff7bc", "#fec44f", "#fe9929", "#d95f0e", "#993404");
@@ -896,14 +897,28 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         if (StringUtils.hasText(category) && StringUtils.hasText(subcategory)
                 && StringUtils.hasText(biomarkerKey) && StringUtils.hasText(year)) {
             return MapFilterSelectionResponse.builder()
-                    .targetClass(StringUtils.hasText(targetClass) ? targetClass.trim() : ALL_TARGET_CLASSES)
-                    .category(category.trim())
-                    .subcategory(subcategory.trim())
-                    .biomarkerKey(biomarkerKey.trim())
-                    .year(year.trim())
+                    .targetClass(normalizeAllValue(targetClass, ALL_TARGET_CLASSES))
+                    .category(normalizeAllValue(category, ALL_CATEGORIES))
+                    .subcategory(normalizeAllValue(subcategory, ALL_SUBCATEGORY))
+                    .biomarkerKey(normalizeAllValue(biomarkerKey, ALL_BIOMARKERS))
+                    .year(normalizeAllValue(year, ALL_YEARS))
                     .build();
         }
         return getFilters().getDefaultSelection();
+    }
+
+    private String normalizeAllValue(String value, String sentinel) {
+        if (!StringUtils.hasText(value)) {
+            return sentinel;
+        }
+        String trimmed = value.trim();
+        if (ALL_DISPLAY_VALUE.equals(trimmed)) {
+            return sentinel;
+        }
+        if ("全部 biomarker".equalsIgnoreCase(trimmed) || "全部生物标记物".equals(trimmed)) {
+            return ALL_BIOMARKERS.equals(sentinel) ? ALL_BIOMARKERS : trimmed;
+        }
+        return trimmed;
     }
 
     private void moveAllCategoryToFront(List<String> categories) {
