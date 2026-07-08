@@ -60,7 +60,49 @@ class MapVisualizationServiceImplTest {
 
         assertThat(stats.getRegions()).containsExactly(exact);
         assertThat(stats.getPoints()).containsExactly(exact);
-        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any());
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void allCategoryStatsFallBackWhenExactAggregateHasZeroCounts() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse zeroAggregate = stat(
+                "city",
+                "china|zhejiang|ningbo",
+                "宁波市",
+                "全部目标物质类别",
+                "全部小类",
+                "ALL",
+                "0",
+                0);
+        zeroAggregate.setDoiCount(0L);
+        zeroAggregate.setPointCount(0L);
+        when(mapper.findStats(
+                eq("全部目标物质类别"),
+                eq("ALL"),
+                eq("全部小类"),
+                eq("ALL"),
+                eq("全部年份"),
+                any()))
+                .thenReturn(List.of(zeroAggregate));
+        when(mapper.findStatsForAnyCategory(
+                eq("全部目标物质类别"),
+                eq("ALL"),
+                eq("全部小类"),
+                eq("ALL"),
+                eq("全部年份"),
+                any()))
+                .thenReturn(List.of(
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "尼古丁代谢物", "COTININE", "2022", "10", 3),
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "大环内酯", "AZITHROMYCIN", "2023", "20", 7)
+                ));
+
+        MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
+        MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
+
+        assertThat(stats.getRegions()).hasSize(1);
+        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
+        assertThat(stats.getRegions().get(0).getPndlGeomeanMgD1000inh()).isEqualByComparingTo("17.000000");
     }
 
     @Test
@@ -75,14 +117,15 @@ class MapVisualizationServiceImplTest {
                 any()))
                 .thenReturn(List.of());
         when(mapper.findStatsForAnyCategory(
+                eq("全部目标物质类别"),
                 eq("ALL"),
                 eq("全部小类"),
                 eq("ALL"),
                 eq("全部年份"),
                 any()))
                 .thenReturn(List.of(
-                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "尼古丁代谢物", "COTININE", "10", 3),
-                        stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "大环内酯", "AZITHROMYCIN", "20", 7)
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "烟草使用标志物", "尼古丁代谢物", "COTININE", "2022", "10", 3),
+                        stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "大环内酯", "AZITHROMYCIN", "2023", "20", 7)
                 ));
 
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
@@ -107,6 +150,7 @@ class MapVisualizationServiceImplTest {
                 any()))
                 .thenReturn(List.of());
         when(mapper.findStatsForAnyCategory(
+                eq("全部目标物质类别"),
                 eq("ALL"),
                 eq("全部小类"),
                 eq("ALL"),
@@ -126,7 +170,7 @@ class MapVisualizationServiceImplTest {
     }
 
     @Test
-    void allCategoryFallbackPrefersExistingAllYearAggregate() {
+    void allCategoryFallbackIgnoresIncompleteAllAggregates() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(
                 eq("全部目标物质类别"),
@@ -137,6 +181,7 @@ class MapVisualizationServiceImplTest {
                 any()))
                 .thenReturn(List.of());
         when(mapper.findStatsForAnyCategory(
+                eq("全部目标物质类别"),
                 eq("ALL"),
                 eq("全部小类"),
                 eq("ALL"),
@@ -152,8 +197,8 @@ class MapVisualizationServiceImplTest {
         MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
 
         assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(5L);
-        assertThat(stats.getRegions().get(0).getPndlGeomeanMgD1000inh()).isEqualByComparingTo("18.000000");
+        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
+        assertThat(stats.getRegions().get(0).getPndlGeomeanMgD1000inh()).isEqualByComparingTo("17.000000");
     }
 
     private MapFilterRow filterRow(String category) {
