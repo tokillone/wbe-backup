@@ -45,9 +45,18 @@ public class DataUploadController {
     @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<DataUploadPreviewResponse> preview(
             @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam(value = "allowDuplicate", defaultValue = "false") boolean allowDuplicate,
             @RequestParam("file") MultipartFile file) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success("解析完成", dataUploadService.preview(file, user));
+        return ApiResponse.success("解析完成", dataUploadService.preview(file, user, allowDuplicate));
+    }
+
+    @PostMapping("/{uploadId}/approve")
+    public ApiResponse<DataUploadBatchResponse> approve(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long uploadId) {
+        User user = securitySupport.requireUser(authorization);
+        return ApiResponse.success("批次已审核通过", dataUploadService.approve(uploadId, user));
     }
 
     @PostMapping("/{uploadId}/sync")

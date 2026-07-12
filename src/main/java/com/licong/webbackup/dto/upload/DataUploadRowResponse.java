@@ -11,10 +11,13 @@ import java.util.Map;
 public class DataUploadRowResponse {
 
     private Long rowId;
+    private String sheetName;
     private Integer excelRowNumber;
     private String status;
     private List<String> errors;
     private List<String> warnings;
     private Long syncedMeasurementId;
+    private String syncedEntityType;
+    private Long syncedEntityId;
     private Map<String, String> data;
 }

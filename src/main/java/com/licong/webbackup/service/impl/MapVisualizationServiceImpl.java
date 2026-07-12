@@ -1,6 +1,8 @@
 package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.map.MapBiomarkerOptionResponse;
+import com.licong.webbackup.dto.map.MapBiomarkerPropertyResponse;
+import com.licong.webbackup.dto.map.MapBiomarkerPropertyRow;
 import com.licong.webbackup.dto.map.MapBreakdownItemResponse;
 import com.licong.webbackup.dto.map.MapBreakdownRow;
 import com.licong.webbackup.dto.map.MapClusterDetailRequest;
@@ -11,8 +13,10 @@ import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapFilterSelectionResponse;
 import com.licong.webbackup.dto.map.MapLegendResponse;
+import com.licong.webbackup.dto.map.MapMetricObservationRow;
 import com.licong.webbackup.dto.map.MapPndlComparisonResponse;
 import com.licong.webbackup.dto.map.MapPndlRankingItemResponse;
+import com.licong.webbackup.dto.map.MapPropertyValueResponse;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapStatsResponse;
@@ -49,7 +53,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final String ALL_DISPLAY_VALUE = "全部";
     private static final List<String> DEFAULT_LEVELS = List.of("country", "admin1", "city");
     private static final Set<String> VALID_LEVELS = Set.of("country", "admin1", "city");
-    private static final List<String> LEGEND_COLORS = List.of("#fff7bc", "#fec44f", "#fe9929", "#d95f0e", "#993404");
+    private static final List<String> LEGEND_COLORS = List.of(
+            "#2C7BB6", "#00A6CA", "#00CCBC", "#FFFF8C", "#FDAE61", "#F46D43", "#D73027");
+    private static final List<String> METRIC_ORDER = List.of(
+            "pndl", "concentration", "daily_load", "drug_consumption", "usage_rate", "disease_prevalence");
     private static final int DETAIL_SOURCE_LIMIT = 20;
     private static final int CLUSTER_LOCATION_LIMIT = 120;
     private static final int FULL_DETAIL_LIMIT = 40;
@@ -263,6 +270,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .pndlRanking(List.of())
                     .pndlComparisons(List.of())
                     .trendSeries(List.of())
+                    .biomarkerProperties(List.of())
                     .categoryBreakdown(List.of())
                     .sources(List.of())
                     .sourceRecords(List.of())
@@ -330,17 +338,30 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         List<MapTrendSeriesResponse> trendSeries = cluster
                 ? List.of()
                 : buildTrendSeries(region, selection);
+        List<MapBiomarkerPropertyResponse> biomarkerProperties = cluster || region == null
+                ? List.of()
+                : buildBiomarkerProperties(region, selection);
+        String coverageYearRange = cluster || region == null
+                ? null
+                : mapVisualizationMapper.findCoverageYearRange(
+                        region.getLevel(),
+                        region.getGeoKey(),
+                        selection.getCategory(),
+                        selection.getTargetClass(),
+                        selection.getSubcategory(),
+                        selection.getBiomarkerKey());
         return MapDetailResponse.builder()
                 .title(cluster ? "PNDL 聚合详情" : (region == null ? "PNDL 详情" : region.getDisplayName()))
                 .subtitle(cluster ? buildClusterSubtitle(safeRegions, selection) : buildRegionSubtitle(region, selection))
                 .cluster(cluster)
                 .region(region)
                 .locations(safeRegions)
-                .summaryCards(buildSummaryCards(region, safeRegions, cluster))
+                .summaryCards(buildSummaryCards(region, safeRegions, cluster, selection, coverageYearRange))
                 .topBiomarkers(topBiomarkers)
                 .pndlRanking(ranking)
                 .pndlComparisons(comparisons)
                 .trendSeries(trendSeries)
+                .biomarkerProperties(biomarkerProperties)
                 .categoryBreakdown(categoryBreakdown)
                 .sources(safeSources)
                 .sourceRecords(safeSources)
@@ -370,7 +391,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
 
     private List<MapSummaryCardResponse> buildSummaryCards(MapRegionStatResponse region,
                                                            List<MapRegionStatResponse> regions,
-                                                           boolean cluster) {
+                                                           boolean cluster,
+                                                           MapFilterSelectionResponse selection,
+                                                           String coverageYearRange) {
         List<MapRegionStatResponse> rows = regions == null ? List.of() : regions;
         long recordCount = rows.stream().map(MapRegionStatResponse::getRecordCount).filter(Objects::nonNull).mapToLong(Long::longValue).sum();
         long doiCount = rows.stream().map(MapRegionStatResponse::getDoiCount).filter(Objects::nonNull).mapToLong(Long::longValue).sum();
@@ -383,25 +406,41 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         List<MapSummaryCardResponse> cards = new ArrayList<>();
         if (cluster) {
             cards.add(summaryCard("位置数", String.valueOf(rows.size()), "聚合气泡包含的可映射位置"));
-            cards.add(summaryCard("记录数", String.valueOf(recordCount), "当前筛选的 PNDL 记录"));
+            cards.add(summaryCard("记录数", String.valueOf(recordCount), "当前筛选记录"));
             cards.add(summaryCard("文献数", String.valueOf(doiCount), "去重 DOI 计数"));
             cards.add(summaryCard("PNDL 范围", rangeValue(min, max), "mg/day/1000 inh"));
             cards.add(summaryCard("点位数", String.valueOf(pointCount), "后端聚合点位"));
             cards.add(summaryCard("城市数", String.valueOf(cityCount), "涉及城市数量"));
             return cards;
         }
-        cards.add(summaryCard("位置精度", locationPrecision(region), region == null ? "" : region.getGeoKey()));
-        cards.add(summaryCard("PNDL 几何均值", decimalValue(region == null ? null : region.getPndlGeomeanMgD1000inh()), "mg/day/1000 inh"));
-        cards.add(summaryCard("PNDL 范围", rangeValue(min, max), "mg/day/1000 inh"));
-        cards.add(summaryCard("记录 / 文献", recordCount + " / " + doiCount, "当前筛选"));
-        cards.add(summaryCard("年份数", String.valueOf(region == null || region.getYearCount() == null ? 0 : region.getYearCount()), "覆盖年份"));
-        cards.add(summaryCard("点位数", String.valueOf(pointCount), "后端聚合点位"));
+        boolean specificBiomarker = selection != null && !ALL_BIOMARKERS.equals(selection.getBiomarkerKey());
+        long displayedPointCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlPointCount())
+                ? region.getPndlPointCount() : pointCount;
+        long displayedDoiCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlDoiCount())
+                ? region.getPndlDoiCount() : doiCount;
+        long displayedRecordCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlRecordCount())
+                ? region.getPndlRecordCount() : recordCount;
+        long biomarkerCount = region == null || region.getBiomarkerCount() == null ? 0 : region.getBiomarkerCount();
+        long pndlYearCount = region == null || region.getPndlYearCount() == null ? 0 : region.getPndlYearCount();
+        cards.add(summaryCard("点位数", String.valueOf(displayedPointCount), "当前统计口径"));
+        cards.add(summaryCard("文献数", String.valueOf(displayedDoiCount), "去重 DOI"));
+        cards.add(summaryCard("记录数", String.valueOf(displayedRecordCount), "当前筛选"));
+        cards.add(summaryCard("biomarker 数", String.valueOf(biomarkerCount), "去重生物标记物"));
+        if (specificBiomarker) {
+            cards.add(summaryCard("PNDL 年份数", String.valueOf(pndlYearCount), "存在可比 PNDL 的年份"));
+        } else {
+            cards.add(summaryCard("年份范围", valueOr(coverageYearRange, "-"), "当前区域覆盖年份"));
+        }
+        cards.add(summaryCard("涉及城市数", String.valueOf(cityCount), "去重城市"));
         return cards;
     }
 
     private List<MapPndlRankingItemResponse> buildRegionRanking(MapRegionStatResponse region,
                                                                 MapFilterSelectionResponse selection) {
-        if (region == null) {
+        if (region == null
+                || region.getPndlMedianMgD1000inh() == null
+                || selection == null
+                || ALL_BIOMARKERS.equals(selection.getBiomarkerKey())) {
             return List.of();
         }
         List<MapRegionStatResponse> rankingRows = mapVisualizationMapper.findRankingStats(
@@ -422,7 +461,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     selection.getYear(),
                     50), selection).stream()
                     .sorted(Comparator
-                            .comparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                            .comparing(MapRegionStatResponse::getPndlMedianMgD1000inh,
                                     Comparator.nullsLast(Comparator.reverseOrder()))
                             .thenComparing(MapRegionStatResponse::getRecordCount,
                                     Comparator.nullsLast(Comparator.reverseOrder()))
@@ -430,13 +469,39 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .limit(12)
                     .toList();
         }
-        return toRankingItems(rankingRows, region.getLevel() + "|" + region.getGeoKey());
+        List<MapPndlRankingItemResponse> items = new ArrayList<>(
+                toRankingItems(rankingRows, region.getLevel() + "|" + region.getGeoKey()));
+        if (region.getPndlMedianMgD1000inh() != null
+                && items.stream().noneMatch(item -> Boolean.TRUE.equals(item.getSelected()))) {
+            int rank = mapVisualizationMapper.countHigherPndlStats(
+                    region.getLevel(), selection.getCategory(), selection.getTargetClass(),
+                    selection.getSubcategory(), selection.getBiomarkerKey(), selection.getYear(),
+                    region.getPndlMedianMgD1000inh()) + 1;
+            items.add(MapPndlRankingItemResponse.builder()
+                    .rank(rank)
+                    .level(region.getLevel())
+                    .geoKey(region.getGeoKey())
+                    .displayName(region.getDisplayName())
+                    .pndlMedianMgD1000inh(region.getPndlMedianMgD1000inh())
+                    .recordCount(region.getRecordCount())
+                    .doiCount(region.getDoiCount())
+                    .pointCount(region.getPointCount())
+                    .yearCount(region.getYearCount())
+                    .pndlRecordCount(region.getPndlRecordCount())
+                    .pndlDoiCount(region.getPndlDoiCount())
+                    .pndlPointCount(region.getPndlPointCount())
+                    .pndlYearCount(region.getPndlYearCount())
+                    .pndlSources(region.getPndlSources())
+                    .selected(true)
+                    .build());
+        }
+        return items;
     }
 
     private List<MapPndlRankingItemResponse> buildClusterRanking(List<MapRegionStatResponse> regions) {
         List<MapRegionStatResponse> rankingRows = regions.stream()
                 .sorted(Comparator
-                        .comparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                        .comparing(MapRegionStatResponse::getPndlMedianMgD1000inh,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(MapRegionStatResponse::getRecordCount,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
@@ -565,23 +630,21 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getSubcategory(),
                 selection.getBiomarkerKey(),
                 selection.getYear(),
-                COMPARISON_LIMIT * 3);
+                COMPARISON_LIMIT * 50);
         if (rows.isEmpty()) {
             return List.of();
         }
-        List<MapRegionStatResponse> normalizedRows = needsSelectionMerge(selection)
-                ? mergeAnyCategoryStats(rows, selection)
-                : rows;
-        List<MapRegionStatResponse> rankingRows = normalizedRows.stream()
+        List<MapRegionStatResponse> rankingRows = rows.stream()
                 .sorted(Comparator
-                        .comparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                        .comparing(MapRegionStatResponse::getPndlMedianMgD1000inh,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(MapRegionStatResponse::getRecordCount,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(MapRegionStatResponse::getDisplayName, Comparator.nullsLast(String::compareTo)))
-                .limit(COMPARISON_LIMIT)
                 .toList();
-        return toRankingItems(rankingRows, highlightSelected ? selectedRegionId : "");
+        return toRankingItems(rankingRows, highlightSelected ? selectedRegionId : "").stream()
+                .filter(item -> item.getRank() <= COMPARISON_LIMIT || Boolean.TRUE.equals(item.getSelected()))
+                .toList();
     }
 
     private List<MapTrendSeriesResponse> buildTrendSeries(MapRegionStatResponse region,
@@ -589,22 +652,114 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         if (region == null || ALL_BIOMARKERS.equals(selection.getBiomarkerKey())) {
             return List.of();
         }
-        List<MapTrendPointResponse> points = mapVisualizationMapper.findPndlTrend(
+        List<MapMetricObservationRow> observations = mapVisualizationMapper.findMetricObservations(
                 region.getLevel(),
                 region.getGeoKey(),
                 selection.getCategory(),
                 selection.getTargetClass(),
                 selection.getSubcategory(),
                 selection.getBiomarkerKey());
-        if (points.size() < 2) {
-            return List.of();
+        Map<String, List<MapMetricObservationRow>> rowsByMetric = new LinkedHashMap<>();
+        observations.forEach(row -> rowsByMetric.computeIfAbsent(row.getMetricKey(), ignored -> new ArrayList<>()).add(row));
+        List<MapTrendSeriesResponse> result = new ArrayList<>();
+        for (String metricKey : METRIC_ORDER) {
+            List<MapMetricObservationRow> metricRows = rowsByMetric.getOrDefault(metricKey, List.of());
+            if (metricRows.isEmpty()) {
+                continue;
+            }
+            Map<String, List<MapMetricObservationRow>> rowsByUnit = new LinkedHashMap<>();
+            metricRows.forEach(row -> rowsByUnit.computeIfAbsent(valueOr(row.getUnit(), ""), ignored -> new ArrayList<>()).add(row));
+            Map.Entry<String, List<MapMetricObservationRow>> selectedUnit = rowsByUnit.entrySet().stream()
+                    .filter(entry -> StringUtils.hasText(entry.getKey()))
+                    .max(Comparator
+                            .comparingLong((Map.Entry<String, List<MapMetricObservationRow>> entry) ->
+                                    entry.getValue().stream().map(MapMetricObservationRow::getYear)
+                                            .filter(Objects::nonNull).distinct().count())
+                            .thenComparingInt(entry -> entry.getValue().size()))
+                    .orElse(null);
+            if (selectedUnit == null) {
+                continue;
+            }
+            Map<Integer, List<BigDecimal>> valuesByYear = new LinkedHashMap<>();
+            selectedUnit.getValue().stream()
+                    .filter(row -> row.getYear() != null && row.getValue() != null
+                            && row.getValue().compareTo(BigDecimal.ZERO) > 0)
+                    .sorted(Comparator.comparing(MapMetricObservationRow::getYear))
+                    .forEach(row -> valuesByYear.computeIfAbsent(row.getYear(), ignored -> new ArrayList<>()).add(row.getValue()));
+            List<MapTrendPointResponse> points = valuesByYear.entrySet().stream().map(entry -> {
+                MapTrendPointResponse point = new MapTrendPointResponse();
+                point.setYear(entry.getKey());
+                point.setValue(median(entry.getValue()));
+                point.setRecordCount((long) entry.getValue().size());
+                point.setValueCount((long) entry.getValue().size());
+                return point;
+            }).toList();
+            if (points.size() < 2) {
+                continue;
+            }
+            result.add(MapTrendSeriesResponse.builder()
+                    .metricKey(metricKey)
+                    .label(valueOr(metricRows.get(0).getMetricLabel(), metricKey) + "年度趋势")
+                    .unit(selectedUnit.getKey())
+                    .points(points)
+                    .build());
         }
-        return List.of(MapTrendSeriesResponse.builder()
-                .metricKey("pndl")
-                .label("PNDL年度趋势")
-                .unit(PNDL_UNIT)
-                .points(points)
-                .build());
+        return result;
+    }
+
+    private List<MapBiomarkerPropertyResponse> buildBiomarkerProperties(MapRegionStatResponse region,
+                                                                         MapFilterSelectionResponse selection) {
+        List<MapBiomarkerPropertyRow> rows = mapVisualizationMapper.findBiomarkerProperties(
+                region.getLevel(), region.getGeoKey(), selection.getCategory(), selection.getTargetClass(),
+                selection.getSubcategory(), selection.getBiomarkerKey());
+        Map<String, List<MapBiomarkerPropertyRow>> rowsByBiomarker = new LinkedHashMap<>();
+        rows.forEach(row -> rowsByBiomarker.computeIfAbsent(row.getBiomarkerKey(), ignored -> new ArrayList<>()).add(row));
+        int limit = ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? 6 : 1;
+        return rowsByBiomarker.values().stream()
+                .sorted(Comparator.comparingLong((List<MapBiomarkerPropertyRow> group) -> group.stream()
+                        .map(MapBiomarkerPropertyRow::getRecordCount).filter(Objects::nonNull)
+                        .mapToLong(Long::longValue).sum()).reversed())
+                .limit(limit)
+                .map(group -> {
+                    MapBiomarkerPropertyRow first = group.get(0);
+                    List<MapPropertyValueResponse> values = group.stream()
+                            .filter(row -> StringUtils.hasText(row.getPropertyText()))
+                            .sorted(Comparator.comparing(MapBiomarkerPropertyRow::getRecordCount,
+                                    Comparator.nullsLast(Comparator.reverseOrder())))
+                            .limit(5)
+                            .map(row -> MapPropertyValueResponse.builder()
+                                    .text(row.getPropertyText())
+                                    .count(row.getRecordCount())
+                                    .build())
+                            .toList();
+                    long recordCount = group.stream().map(MapBiomarkerPropertyRow::getRecordCount)
+                            .filter(Objects::nonNull).mapToLong(Long::longValue).sum();
+                    return MapBiomarkerPropertyResponse.builder()
+                            .biomarkerKey(first.getBiomarkerKey())
+                            .biomarkerLabel(first.getBiomarkerLabel())
+                            .biomarkerCas(first.getBiomarkerCas())
+                            .targetClass(first.getTargetClass())
+                            .category(first.getCategory())
+                            .subcategory(first.getSubcategory())
+                            .recordCount(recordCount)
+                            .variantCount(values.size())
+                            .values(values)
+                            .build();
+                })
+                .toList();
+    }
+
+    static BigDecimal median(List<BigDecimal> values) {
+        List<BigDecimal> sorted = values.stream().filter(Objects::nonNull).sorted().toList();
+        if (sorted.isEmpty()) {
+            return null;
+        }
+        int middle = sorted.size() / 2;
+        if (sorted.size() % 2 == 1) {
+            return sorted.get(middle);
+        }
+        return sorted.get(middle - 1).add(sorted.get(middle))
+                .divide(BigDecimal.valueOf(2), 10, RoundingMode.HALF_UP);
     }
 
     private boolean needsSelectionMerge(MapFilterSelectionResponse selection) {
@@ -668,11 +823,15 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .level(row.getLevel())
                     .geoKey(row.getGeoKey())
                     .displayName(row.getDisplayName())
-                    .pndlGeomeanMgD1000inh(row.getPndlGeomeanMgD1000inh())
+                    .pndlMedianMgD1000inh(row.getPndlMedianMgD1000inh())
                     .recordCount(row.getRecordCount())
                     .doiCount(row.getDoiCount())
                     .pointCount(row.getPointCount())
                     .yearCount(row.getYearCount())
+                    .pndlRecordCount(row.getPndlRecordCount())
+                    .pndlDoiCount(row.getPndlDoiCount())
+                    .pndlPointCount(row.getPndlPointCount())
+                    .pndlYearCount(row.getPndlYearCount())
                     .pndlSources(row.getPndlSources())
                     .selected(regionId.equals(selectedRegionId))
                     .build());
@@ -814,7 +973,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .map(group -> mergeRegionGroup(mostConcreteFallbackRows(group, selection), selection))
                 .sorted(Comparator
                         .comparing(MapRegionStatResponse::getLevel, Comparator.nullsLast(Comparator.naturalOrder()))
-                        .thenComparing(MapRegionStatResponse::getPndlGeomeanMgD1000inh,
+                        .thenComparing(MapRegionStatResponse::getPndlMedianMgD1000inh,
                                 Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(MapRegionStatResponse::getDisplayName, Comparator.nullsLast(String::compareTo)))
                 .toList();
@@ -898,8 +1057,8 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         return hasPositiveCount(row.getRecordCount())
                 || hasPositiveCount(row.getDoiCount())
                 || hasPositiveCount(row.getPointCount())
-                || (row.getPndlGeomeanMgD1000inh() != null
-                && row.getPndlGeomeanMgD1000inh().compareTo(BigDecimal.ZERO) > 0);
+                || (row.getPndlMedianMgD1000inh() != null
+                && row.getPndlMedianMgD1000inh().compareTo(BigDecimal.ZERO) > 0);
     }
 
     private MapRegionStatResponse mergeRegionGroup(List<MapRegionStatResponse> group,
@@ -921,7 +1080,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         merged.setBiomarkerLabel(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? "全部 biomarker" : first.getBiomarkerLabel());
         merged.setBiomarkerCas(ALL_BIOMARKERS.equals(selection.getBiomarkerKey()) ? null : first.getBiomarkerCas());
         merged.setYearLabel(selection.getYear());
-        merged.setPndlGeomeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlGeomeanMgD1000inh));
+        merged.setPndlMedianMgD1000inh(group.size() == 1 ? first.getPndlMedianMgD1000inh() : null);
         merged.setPndlMeanMgD1000inh(weightedAverage(group, MapRegionStatResponse::getPndlMeanMgD1000inh));
         merged.setPndlMinMgD1000inh(group.stream().map(MapRegionStatResponse::getPndlMinMgD1000inh).filter(Objects::nonNull)
                 .min(BigDecimal::compareTo).orElse(null));
@@ -932,6 +1091,11 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         merged.setYearCount(maxLong(group, MapRegionStatResponse::getYearCount));
         merged.setCityCount(sumLong(group, MapRegionStatResponse::getCityCount));
         merged.setPointCount(sumLong(group, MapRegionStatResponse::getPointCount));
+        merged.setBiomarkerCount(maxLong(group, MapRegionStatResponse::getBiomarkerCount));
+        merged.setPndlRecordCount(group.size() == 1 && first.getPndlRecordCount() != null ? first.getPndlRecordCount() : 0L);
+        merged.setPndlDoiCount(group.size() == 1 && first.getPndlDoiCount() != null ? first.getPndlDoiCount() : 0L);
+        merged.setPndlPointCount(group.size() == 1 && first.getPndlPointCount() != null ? first.getPndlPointCount() : 0L);
+        merged.setPndlYearCount(group.size() == 1 && first.getPndlYearCount() != null ? first.getPndlYearCount() : 0L);
         merged.setPndlSources("多类别合并显示");
         return merged;
     }
@@ -1047,7 +1211,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
 
     private MapLegendResponse buildLegend(List<MapRegionStatResponse> regions) {
         List<BigDecimal> values = regions.stream()
-                .map(MapRegionStatResponse::getPndlGeomeanMgD1000inh)
+                .map(MapRegionStatResponse::getPndlMedianMgD1000inh)
                 .filter(Objects::nonNull)
                 .filter(value -> value.compareTo(BigDecimal.ZERO) > 0)
                 .toList();

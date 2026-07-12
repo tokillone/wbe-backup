@@ -34,7 +34,7 @@ public class UserResponse {
                 .canUpload(isAdmin || (user.getCanUpload() == null ? defaultManager : Boolean.TRUE.equals(user.getCanUpload())))
                 .canReviewUploads(isAdmin || (user.getCanReviewUploads() == null ? defaultManager : Boolean.TRUE.equals(user.getCanReviewUploads())))
                 .canSyncData(isAdmin || (user.getCanSyncData() == null ? defaultManager : Boolean.TRUE.equals(user.getCanSyncData())))
-                .canDownload(user.getCanDownload() == null || Boolean.TRUE.equals(user.getCanDownload()))
+                .canDownload(isAdmin || user.getCanDownload() == null || Boolean.TRUE.equals(user.getCanDownload()))
                 .isActive(user.getIsActive())
                 .lastLogin(user.getLastLogin())
                 .build();

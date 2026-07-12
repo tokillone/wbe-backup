@@ -22,6 +22,7 @@ public class MapRegionStatResponse {
     private String biomarkerLabel;
     private String biomarkerCas;
     private String yearLabel;
+    private BigDecimal pndlMedianMgD1000inh;
     private BigDecimal pndlGeomeanMgD1000inh;
     private BigDecimal pndlMeanMgD1000inh;
     private BigDecimal pndlMinMgD1000inh;
@@ -31,5 +32,10 @@ public class MapRegionStatResponse {
     private Long yearCount;
     private Long cityCount;
     private Long pointCount;
+    private Long biomarkerCount;
+    private Long pndlRecordCount;
+    private Long pndlDoiCount;
+    private Long pndlPointCount;
+    private Long pndlYearCount;
     private String pndlSources;
 }

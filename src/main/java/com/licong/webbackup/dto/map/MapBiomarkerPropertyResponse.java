@@ -1,9 +1,13 @@
 package com.licong.webbackup.dto.map;
 
+import lombok.Builder;
 import lombok.Data;
 
+import java.util.List;
+
 @Data
-public class MapTopBiomarkerResponse {
+@Builder
+public class MapBiomarkerPropertyResponse {
 
     private String biomarkerKey;
     private String biomarkerLabel;
@@ -12,7 +16,6 @@ public class MapTopBiomarkerResponse {
     private String category;
     private String subcategory;
     private Long recordCount;
-    private Long doiCount;
-    private Long pointCount;
-    private Boolean hasPndl;
+    private Integer variantCount;
+    private List<MapPropertyValueResponse> values;
 }

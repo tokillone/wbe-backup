@@ -17,6 +17,7 @@ public class Icd11SankeyLinkResponse {
     private String sourceLabel;
     private String targetLabel;
     private String edgeType;
+    private String mappingLevel;
     private List<String> pathIds;
     private String color;
 }

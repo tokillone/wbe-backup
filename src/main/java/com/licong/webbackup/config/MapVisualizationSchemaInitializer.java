@@ -24,10 +24,17 @@ public class MapVisualizationSchemaInitializer {
         ensureTables();
         ensureIndex("geo_locations", "idx_geo_parent", "CREATE INDEX idx_geo_parent ON geo_locations (level, parent_geo_key)");
         ensureIndex("geo_locations", "idx_geo_names", "CREATE INDEX idx_geo_names ON geo_locations (country, province, city)");
+        ensureColumn("map_pndl_stats", "pndl_median_mg_d_1000inh", "DECIMAL(28,10)");
+        ensureColumn("map_pndl_stats", "biomarker_count", "BIGINT NOT NULL DEFAULT 0");
+        ensureColumn("map_pndl_stats", "pndl_record_count", "BIGINT NOT NULL DEFAULT 0");
+        ensureColumn("map_pndl_stats", "pndl_doi_count", "BIGINT NOT NULL DEFAULT 0");
+        ensureColumn("map_pndl_stats", "pndl_point_count", "BIGINT NOT NULL DEFAULT 0");
+        ensureColumn("map_pndl_stats", "pndl_year_count", "BIGINT NOT NULL DEFAULT 0");
         ensureIndex("map_pndl_stats", "idx_map_filter", "CREATE INDEX idx_map_filter ON map_pndl_stats (category, subcategory, biomarker_key, year_label, level, geo_key)");
         ensureIndex("map_pndl_stats", "idx_map_target_filter", "CREATE INDEX idx_map_target_filter ON map_pndl_stats (target_class, category, subcategory, biomarker_key, year_label, level, geo_key)");
         ensureIndex("map_pndl_stats", "idx_map_geo", "CREATE INDEX idx_map_geo ON map_pndl_stats (level, geo_key)");
         ensureIndex("map_pndl_stats", "idx_map_value", "CREATE INDEX idx_map_value ON map_pndl_stats (pndl_geomean_mg_d_1000inh)");
+        ensureIndex("map_pndl_stats", "idx_map_median", "CREATE INDEX idx_map_median ON map_pndl_stats (pndl_median_mg_d_1000inh)");
         ensureIndex("wastewater_plants", "idx_wastewater_plants_geo", "CREATE INDEX idx_wastewater_plants_geo ON wastewater_plants (country, province, city)");
         ensureIndex("compounds", "idx_compounds_map_filter", "CREATE INDEX idx_compounds_map_filter ON compounds (substance_category, substance_subclass, biomarker_cas)");
         seedGeoLocationsIfEmpty();
@@ -72,6 +79,7 @@ public class MapVisualizationSchemaInitializer {
                     biomarker_label VARCHAR(220) NOT NULL,
                     biomarker_cas VARCHAR(80),
                     year_label VARCHAR(32) NOT NULL,
+                    pndl_median_mg_d_1000inh DECIMAL(28,10),
                     pndl_geomean_mg_d_1000inh DECIMAL(28,10),
                     pndl_mean_mg_d_1000inh DECIMAL(28,10),
                     pndl_min_mg_d_1000inh DECIMAL(28,10),
@@ -81,11 +89,38 @@ public class MapVisualizationSchemaInitializer {
                     year_count BIGINT NOT NULL DEFAULT 0,
                     city_count BIGINT NOT NULL DEFAULT 0,
                     point_count BIGINT NOT NULL DEFAULT 0,
+                    biomarker_count BIGINT NOT NULL DEFAULT 0,
+                    pndl_record_count BIGINT NOT NULL DEFAULT 0,
+                    pndl_doi_count BIGINT NOT NULL DEFAULT 0,
+                    pndl_point_count BIGINT NOT NULL DEFAULT 0,
+                    pndl_year_count BIGINT NOT NULL DEFAULT 0,
                     pndl_sources VARCHAR(200),
                     is_mappable BOOLEAN NOT NULL DEFAULT TRUE,
                     refreshed_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化PNDL预聚合表'
                 """);
+    }
+
+    private void ensureColumn(String tableName, String columnName, String definition) {
+        Integer tableCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name = ?
+                """, Integer.class, tableName);
+        if (tableCount == null || tableCount == 0) {
+            return;
+        }
+        Integer columnCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = ?
+                  AND column_name = ?
+                """, Integer.class, tableName, columnName);
+        if (columnCount == null || columnCount == 0) {
+            jdbcTemplate.execute("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + definition);
+        }
     }
 
     private void ensureIndex(String tableName, String indexName, String createSql) {
@@ -113,7 +148,11 @@ public class MapVisualizationSchemaInitializer {
 
     private void seedGeoLocationsIfEmpty() {
         Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM geo_locations", Long.class);
-        if (count != null && count > 0) {
+        Long canonicalChinaCityCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM geo_locations
+                WHERE level = 'city' AND geo_key = 'china|guangdong|guangzhou'
+                """, Long.class);
+        if (count != null && count > 0 && canonicalChinaCityCount != null && canonicalChinaCityCount > 0) {
             return;
         }
         ClassPathResource script = new ClassPathResource("db/map_geolocation_seed.sql");
@@ -123,5 +162,19 @@ public class MapVisualizationSchemaInitializer {
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
         populator.addScript(script);
         populator.execute(dataSource);
+        jdbcTemplate.update("""
+                DELETE FROM geo_locations
+                WHERE level IN ('admin1', 'city')
+                  AND geo_key LIKE 'china|%'
+                  AND COALESCE(coordinate_source, '') != 'canonical-boundary-centroid'
+                """);
+        if (count != null && count > 0) {
+            ClassPathResource refreshScript = new ClassPathResource("db/map_pndl_stats_refresh.sql");
+            if (refreshScript.exists()) {
+                ResourceDatabasePopulator refreshPopulator = new ResourceDatabasePopulator();
+                refreshPopulator.addScript(refreshScript);
+                refreshPopulator.execute(dataSource);
+            }
+        }
     }
 }

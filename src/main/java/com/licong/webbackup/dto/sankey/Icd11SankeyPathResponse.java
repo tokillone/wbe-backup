@@ -12,6 +12,8 @@ public class Icd11SankeyPathResponse {
     private String pathId;
     private String level1;
     private String level2;
+    private String level3;
+    private String mappingLevel;
     private String drug;
     private String biomarker;
     private List<String> biomarkerAliases;

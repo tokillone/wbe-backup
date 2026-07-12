@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS map_pndl_stats (
     biomarker_label VARCHAR(220) NOT NULL,
     biomarker_cas VARCHAR(80),
     year_label VARCHAR(32) NOT NULL,
+    pndl_median_mg_d_1000inh DECIMAL(28,10),
     pndl_geomean_mg_d_1000inh DECIMAL(28,10),
     pndl_mean_mg_d_1000inh DECIMAL(28,10),
     pndl_min_mg_d_1000inh DECIMAL(28,10),
@@ -48,13 +49,19 @@ CREATE TABLE IF NOT EXISTS map_pndl_stats (
     year_count BIGINT NOT NULL DEFAULT 0,
     city_count BIGINT NOT NULL DEFAULT 0,
     point_count BIGINT NOT NULL DEFAULT 0,
+    biomarker_count BIGINT NOT NULL DEFAULT 0,
+    pndl_record_count BIGINT NOT NULL DEFAULT 0,
+    pndl_doi_count BIGINT NOT NULL DEFAULT 0,
+    pndl_point_count BIGINT NOT NULL DEFAULT 0,
+    pndl_year_count BIGINT NOT NULL DEFAULT 0,
     pndl_sources VARCHAR(200),
     is_mappable BOOLEAN NOT NULL DEFAULT TRUE,
     refreshed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     KEY idx_map_filter (category, subcategory, biomarker_key, year_label, level, geo_key),
     KEY idx_map_target_filter (target_class, category, subcategory, biomarker_key, year_label, level, geo_key),
     KEY idx_map_geo (level, geo_key),
-    KEY idx_map_value (pndl_geomean_mg_d_1000inh)
+    KEY idx_map_value (pndl_geomean_mg_d_1000inh),
+    KEY idx_map_median (pndl_median_mg_d_1000inh)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化PNDL预聚合表';
 
 -- Supporting indexes for source-table refresh and detail drilldown.

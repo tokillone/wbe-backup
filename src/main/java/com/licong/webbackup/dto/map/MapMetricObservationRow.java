@@ -5,10 +5,11 @@ import lombok.Data;
 import java.math.BigDecimal;
 
 @Data
-public class MapTrendPointResponse {
+public class MapMetricObservationRow {
 
+    private String metricKey;
+    private String metricLabel;
+    private String unit;
     private Integer year;
     private BigDecimal value;
-    private Long recordCount;
-    private Long valueCount;
 }

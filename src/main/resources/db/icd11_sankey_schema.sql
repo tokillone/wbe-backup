@@ -17,15 +17,38 @@ CREATE TABLE IF NOT EXISTS icd11_sankey_paths (
     icd11_level3_name VARCHAR(220),
     mapping_level VARCHAR(80),
     match_type VARCHAR(180),
+    in_sankey BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否进入桑基图',
+    exclusion_reason TEXT COMMENT '不入图原因',
     review_status VARCHAR(120),
     note TEXT,
     biomarker_cas VARCHAR(80),
     literature_count DECIMAL(18,4) NOT NULL DEFAULT 1 COMMENT '桑基图权重：涉及文献数',
     data_row_count BIGINT NOT NULL DEFAULT 0 COMMENT '后台统计：数据行数',
+    unique_doi_count INT NOT NULL DEFAULT 0 COMMENT '唯一DOI数',
+    missing_doi_count INT NOT NULL DEFAULT 0 COMMENT 'DOI缺失数',
+    upload_id BIGINT NULL COMMENT '来源上传批次',
+    upload_row_id BIGINT NULL COMMENT '来源上传行',
+    raw_payload LONGTEXT NULL COMMENT '映射表原始行JSON',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     KEY idx_icd11_sankey_category (target_category),
     KEY idx_icd11_sankey_level1 (target_category, icd11_level1_name),
     KEY idx_icd11_sankey_level2 (target_category, icd11_level2_name),
+    KEY idx_icd11_sankey_level3 (target_category, icd11_level3_name),
+    KEY idx_icd11_sankey_mapping_depth (in_sankey, mapping_level),
     KEY idx_icd11_sankey_drug (target_category, drug_name),
     KEY idx_icd11_sankey_biomarker (target_category, biomarker_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ICD11 四层桑基图聚合路径表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ICD11疾病映射与可变层级桑基图路径源表';
+
+CREATE TABLE IF NOT EXISTS icd11_sankey_path_sources (
+    source_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    sankey_path_id BIGINT NOT NULL,
+    source_order INT NOT NULL,
+    literature_code VARCHAR(50),
+    doi VARCHAR(200),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_icd11_path_source_order (sankey_path_id, source_order),
+    KEY idx_icd11_path_source_literature (literature_code),
+    KEY idx_icd11_path_source_doi (doi),
+    CONSTRAINT fk_icd11_path_source_path FOREIGN KEY (sankey_path_id)
+        REFERENCES icd11_sankey_paths(sankey_path_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ICD11映射路径来源文献与DOI';

@@ -20,7 +20,16 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable
 
-import openpyxl
+if __name__ == "__main__":
+    from import_wbe_workbook_via_api import main as api_import_main
+
+    api_import_main()
+    raise SystemExit(0)
+
+try:
+    import openpyxl
+except ModuleNotFoundError:
+    openpyxl = None
 
 
 DATA_SHEET = "数据表"
@@ -1046,5 +1055,10 @@ def main() -> None:
         print(f"Warning: skipped {data.stats['home_missing_doi']} home rows without DOI.")
 
 
-if __name__ == "__main__":
-    main()
+legacy_direct_main = main
+
+
+def main() -> None:
+    from import_wbe_workbook_via_api import main as api_import_main
+
+    api_import_main()

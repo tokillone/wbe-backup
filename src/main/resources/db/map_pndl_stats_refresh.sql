@@ -1,7 +1,7 @@
 -- Refresh map_pndl_stats from real backend tables.
 -- Prerequisite: map_visualization_schema.sql and map_geolocation_seed.sql have been applied.
 
-TRUNCATE TABLE map_pndl_stats;
+DELETE FROM map_pndl_stats;
 
 INSERT INTO map_pndl_stats (
     level,
@@ -20,6 +20,7 @@ INSERT INTO map_pndl_stats (
     biomarker_label,
     biomarker_cas,
     year_label,
+    pndl_median_mg_d_1000inh,
     pndl_geomean_mg_d_1000inh,
     pndl_mean_mg_d_1000inh,
     pndl_min_mg_d_1000inh,
@@ -29,6 +30,11 @@ INSERT INTO map_pndl_stats (
     year_count,
     city_count,
     point_count,
+    biomarker_count,
+    pndl_record_count,
+    pndl_doi_count,
+    pndl_point_count,
+    pndl_year_count,
     pndl_sources,
     is_mappable,
     refreshed_at
@@ -59,26 +65,13 @@ WITH source_rows AS (
       wp.city AS source_city,
       c.doi,
       m.measurement_id,
-      CASE
-        WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_value
-        WHEN m.pndl_value IS NOT NULL THEN m.pndl_value
-        ELSE m.pndl_estimated_value
-      END AS raw_pndl_value,
+      m.plot_pndl_value AS raw_pndl_value,
       LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
         COALESCE(
-          CASE
-            WHEN m.plot_pndl_value IS NOT NULL THEN m.plot_pndl_unit
-            WHEN m.pndl_value IS NOT NULL THEN m.pndl_unit
-            ELSE m.pndl_estimated_unit
-          END,
+          m.plot_pndl_unit,
           ''
         ), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) AS unit_key,
-      CASE
-        WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL'
-        WHEN m.pndl_value IS NOT NULL THEN 'PNDL'
-        WHEN m.pndl_estimated_value IS NOT NULL THEN 'PNDL估算'
-        ELSE NULL
-      END AS pndl_source
+      CASE WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL' END AS pndl_source
     FROM measurements m
     JOIN compounds c ON c.compound_id = m.compound_id
     JOIN sampling_events se ON se.event_id = m.event_id
@@ -148,6 +141,7 @@ matched_rows AS (
         converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.province), ''), '[^0-9a-zA-Z]+', ''))
         OR converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
         OR converted_rows.province_key = SUBSTRING_INDEX(gl.geo_key, '|', -1)
+        OR converted_rows.province_key = CONCAT(SUBSTRING_INDEX(gl.geo_key, '|', -1), 'province')
         OR CONCAT(converted_rows.province_key, 'province') = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
       )
 
@@ -167,60 +161,72 @@ matched_rows AS (
     FROM converted_rows
     JOIN geo_locations gl ON gl.level = 'city'
       AND gl.is_mappable = TRUE
-      AND gl.parent_geo_key = converted_rows.country_key
+      AND SUBSTRING_INDEX(gl.geo_key, '|', 1) = converted_rows.country_key
       AND converted_rows.city_key <> ''
       AND (
         converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.city), ''), '[^0-9a-zA-Z]+', ''))
         OR converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
         OR converted_rows.city_key = SUBSTRING_INDEX(gl.geo_key, '|', -1)
+        OR converted_rows.city_key = CONCAT(SUBSTRING_INDEX(gl.geo_key, '|', -1), 'city')
         OR CONCAT(converted_rows.city_key, 'city') = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
       )
-),
-valid_base AS (
-    SELECT *
-    FROM matched_rows
-    WHERE pndl_mg_d_1000inh IS NOT NULL
-      AND pndl_mg_d_1000inh > 0
 ),
 expanded AS (
     SELECT *, target_class AS agg_target_class, category AS agg_category,
       source_subcategory AS subcategory, source_biomarker_key AS biomarker_key,
       source_biomarker_label AS biomarker_label, biomarker_cas AS expanded_biomarker_cas,
       source_year AS year_label
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, '全部小类', source_biomarker_key, source_biomarker_label, biomarker_cas, source_year
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, source_subcategory, 'ALL', '全部 biomarker', NULL, source_year
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, '全部小类', 'ALL', '全部 biomarker', NULL, source_year
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, source_subcategory, source_biomarker_key, source_biomarker_label, biomarker_cas, '全部年份'
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, '全部小类', source_biomarker_key, source_biomarker_label, biomarker_cas, '全部年份'
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, source_subcategory, 'ALL', '全部 biomarker', NULL, '全部年份'
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, category, '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, source_year
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, target_class, '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, 'ALL', '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, source_year
-    FROM valid_base
+    FROM matched_rows
     UNION ALL
     SELECT *, 'ALL', '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
-    FROM valid_base
+    FROM matched_rows
+),
+ranked AS (
+    SELECT
+      expanded.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY level, geo_key, agg_target_class, agg_category, subcategory,
+          biomarker_key, biomarker_label, year_label
+        ORDER BY
+          CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN 0 ELSE 1 END,
+          pndl_mg_d_1000inh,
+          measurement_id
+      ) AS pndl_rank,
+      COUNT(CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN 1 END) OVER (
+        PARTITION BY level, geo_key, agg_target_class, agg_category, subcategory,
+          biomarker_key, biomarker_label, year_label
+      ) AS pndl_value_count
+    FROM expanded
 )
 SELECT
     level,
@@ -239,19 +245,38 @@ SELECT
     biomarker_label,
     CASE WHEN biomarker_key = 'ALL' THEN NULL ELSE MIN(expanded_biomarker_cas) END AS biomarker_cas,
     year_label,
-    EXP(AVG(LN(pndl_mg_d_1000inh))) AS pndl_geomean_mg_d_1000inh,
-    AVG(pndl_mg_d_1000inh) AS pndl_mean_mg_d_1000inh,
-    MIN(pndl_mg_d_1000inh) AS pndl_min_mg_d_1000inh,
-    MAX(pndl_mg_d_1000inh) AS pndl_max_mg_d_1000inh,
+    AVG(CASE
+      WHEN biomarker_key <> 'ALL'
+        AND pndl_mg_d_1000inh > 0
+        AND pndl_rank IN (FLOOR((pndl_value_count + 1) / 2), FLOOR((pndl_value_count + 2) / 2))
+      THEN pndl_mg_d_1000inh
+    END) AS pndl_median_mg_d_1000inh,
+    CASE WHEN biomarker_key = 'ALL' THEN NULL
+      ELSE EXP(AVG(CASE WHEN pndl_mg_d_1000inh > 0 THEN LN(pndl_mg_d_1000inh) END))
+    END AS pndl_geomean_mg_d_1000inh,
+    CASE WHEN biomarker_key = 'ALL' THEN NULL
+      ELSE AVG(CASE WHEN pndl_mg_d_1000inh > 0 THEN pndl_mg_d_1000inh END)
+    END AS pndl_mean_mg_d_1000inh,
+    CASE WHEN biomarker_key = 'ALL' THEN NULL
+      ELSE MIN(CASE WHEN pndl_mg_d_1000inh > 0 THEN pndl_mg_d_1000inh END)
+    END AS pndl_min_mg_d_1000inh,
+    CASE WHEN biomarker_key = 'ALL' THEN NULL
+      ELSE MAX(CASE WHEN pndl_mg_d_1000inh > 0 THEN pndl_mg_d_1000inh END)
+    END AS pndl_max_mg_d_1000inh,
     COUNT(DISTINCT measurement_id) AS record_count,
     COUNT(DISTINCT NULLIF(TRIM(doi), '')) AS doi_count,
     COUNT(DISTINCT CASE WHEN source_year <> '未标注年份' THEN source_year END) AS year_count,
     COUNT(DISTINCT NULLIF(TRIM(source_city), '')) AS city_count,
     COUNT(DISTINCT plant_id) AS point_count,
+    COUNT(DISTINCT source_biomarker_key) AS biomarker_count,
+    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN measurement_id END) AS pndl_record_count,
+    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN NULLIF(TRIM(doi), '') END) AS pndl_doi_count,
+    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN plant_id END) AS pndl_point_count,
+    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 AND source_year <> '未标注年份' THEN source_year END) AS pndl_year_count,
     GROUP_CONCAT(DISTINCT pndl_source ORDER BY pndl_source SEPARATOR '、') AS pndl_sources,
     TRUE AS is_mappable,
     NOW() AS refreshed_at
-FROM expanded
+FROM ranked
 GROUP BY
     level,
     geo_key,

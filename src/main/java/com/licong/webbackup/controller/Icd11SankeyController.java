@@ -35,7 +35,7 @@ public class Icd11SankeyController {
                 .body(ApiResponse.success(icd11SankeyService.getCategories()));
     }
 
-    @GetMapping("/graph")
+    @GetMapping({"/graph", "/graph-v2"})
     public ResponseEntity<ApiResponse<Icd11SankeyGraphResponse>> graph(
             @RequestParam(value = "category", required = false) String category,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {

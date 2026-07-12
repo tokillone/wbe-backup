@@ -19,6 +19,7 @@ public class MapDetailResponse {
     private List<MapPndlRankingItemResponse> pndlRanking;
     private List<MapPndlComparisonResponse> pndlComparisons;
     private List<MapTrendSeriesResponse> trendSeries;
+    private List<MapBiomarkerPropertyResponse> biomarkerProperties;
     private List<MapBreakdownItemResponse> categoryBreakdown;
     private List<MapSourceRecordResponse> sources;
     private List<MapSourceRecordResponse> sourceRecords;
