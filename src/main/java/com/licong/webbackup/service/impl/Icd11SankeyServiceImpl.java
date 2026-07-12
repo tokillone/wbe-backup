@@ -121,29 +121,29 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
             addNode(nodes, biomarkerId, biomarker, "biomarker", 4, weight, level1, color,
                     searchText(biomarker, "生物标记物", path.biomarkerAliasSearchText(), path.biomarkerCasSearchText()));
 
-            addLink(links, level1Id, level2Id, weight, level1, level1, level2,
+            addLink(links, level1Id, level2Id, weight, level1, level2, level1, level2,
                     "ICD11_Level1 → ICD11_Level2", mappingLevel, pathId, color);
             if (hasLevel3) {
                 String level3Id = nodeId("level3", path.level3Code(), level3);
                 nodeIds.add(level3Id);
                 addNode(nodes, level3Id, level3, "level3", 2, weight, level1, color,
                         searchText(level3, path.level3Code(), "ICD11_Level3", path.diseaseEntitySearchText()));
-                addLink(links, level2Id, level3Id, weight, level1, level2, level3,
+                addLink(links, level2Id, level3Id, weight, level1, level2, level2, level3,
                         "ICD11_Level2 → ICD11_Level3", mappingLevel, pathId, color);
-                addLink(links, level3Id, drugId, weight, level1, level3, drug,
+                addLink(links, level3Id, drugId, weight, level1, level2, level3, drug,
                         "ICD11_Level3 → 药物", mappingLevel, pathId, color);
                 mergeWeight(level3Weights, level3, weight);
                 level3Paths += 1;
                 level3Weight = level3Weight.add(weight);
             } else {
-                addLink(links, level2Id, drugId, weight, level1, level2, drug,
+                addLink(links, level2Id, drugId, weight, level1, level2, level2, drug,
                         "ICD11_Level2 → 药物", mappingLevel, pathId, color);
                 level2OnlyPaths += 1;
                 level2OnlyWeight = level2OnlyWeight.add(weight);
             }
             nodeIds.add(drugId);
             nodeIds.add(biomarkerId);
-            addLink(links, drugId, biomarkerId, weight, level1, drug, biomarker,
+            addLink(links, drugId, biomarkerId, weight, level1, level2, drug, biomarker,
                     "药物 → 生物标记物", mappingLevel, pathId, color);
 
             mergeWeight(level1Weights, level1, weight);
@@ -225,9 +225,9 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
     }
 
     private void addLink(LinkedHashMap<String, Icd11SankeyLinkResponse> links, String source, String target,
-                         BigDecimal value, String level1, String sourceLabel, String targetLabel,
+                         BigDecimal value, String level1, String level2, String sourceLabel, String targetLabel,
                          String edgeType, String mappingLevel, String pathId, String color) {
-        String linkId = source + "@@" + target + "@@" + edgeType + "@@" + level1;
+        String linkId = source + "@@" + target + "@@" + edgeType + "@@" + level1 + "@@" + level2;
         Icd11SankeyLinkResponse link = links.get(linkId);
         if (link == null) {
             link = Icd11SankeyLinkResponse.builder()
@@ -236,6 +236,7 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
                     .target(target)
                     .value(BigDecimal.ZERO)
                     .level1(level1)
+                    .level2(level2)
                     .sourceLabel(sourceLabel)
                     .targetLabel(targetLabel)
                     .edgeType(edgeType)

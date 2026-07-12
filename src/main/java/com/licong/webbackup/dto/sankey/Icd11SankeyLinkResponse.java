@@ -14,6 +14,7 @@ public class Icd11SankeyLinkResponse {
     private String target;
     private BigDecimal value;
     private String level1;
+    private String level2;
     private String sourceLabel;
     private String targetLabel;
     private String edgeType;

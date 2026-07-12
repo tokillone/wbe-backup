@@ -61,6 +61,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
     private static final int CLUSTER_LOCATION_LIMIT = 120;
     private static final int FULL_DETAIL_LIMIT = 40;
     private static final int COMPARISON_LIMIT = 30;
+    private static final int DETAIL_BIOMARKER_LIMIT = 20;
     private static final String PNDL_UNIT = "mg/day/1000 inh";
 
     private final MapVisualizationMapper mapVisualizationMapper;
@@ -320,7 +321,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                         selection.getBiomarkerKey(),
                         selection.getYear(),
                         safeQueryLocations,
-                        10);
+                        DETAIL_BIOMARKER_LIMIT);
         List<MapBreakdownItemResponse> categoryBreakdown = safeQueryLocations.isEmpty()
                 ? List.of()
                 : buildCategoryBreakdown(mapVisualizationMapper.findCategoryBreakdownForLocations(

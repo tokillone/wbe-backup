@@ -935,7 +935,7 @@ public interface MapVisualizationMapper {
                 )
               </if>
             GROUP BY biomarker_key, biomarker_label
-            ORDER BY SUM(record_count) DESC, SUM(point_count) DESC, biomarker_label ASC
+            ORDER BY SUM(doi_count) DESC, SUM(record_count) DESC, SUM(point_count) DESC, biomarker_label ASC
             LIMIT #{limit}
             </script>
             """)
