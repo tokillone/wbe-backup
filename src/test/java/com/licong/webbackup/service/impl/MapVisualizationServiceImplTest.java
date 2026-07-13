@@ -2,7 +2,9 @@ package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapFilterRow;
+import com.licong.webbackup.dto.map.MapDetailResponse;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
+import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapStatsResponse;
 import com.licong.webbackup.mapper.MapVisualizationMapper;
 import org.junit.jupiter.api.Test;
@@ -241,6 +243,101 @@ class MapVisualizationServiceImplTest {
         assertThat(stats.getRegions()).hasSize(1);
         assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
         assertThat(stats.getRegions().get(0).getPndlMedianMgD1000inh()).isNull();
+    }
+
+    @Test
+    void detailSummaryUsesCoverageCountsInsteadOfPndlOnlyCounts() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse dalian = stat(
+                "city",
+                "china|liaoning|dalian",
+                "大连市",
+                "R05 咳嗽和感冒用药",
+                "R05D 镇咳药",
+                "125735",
+                "7.41",
+                191);
+        dalian.setPointCount(19L);
+        dalian.setDoiCount(1L);
+        dalian.setPndlRecordCount(32L);
+        dalian.setPndlPointCount(4L);
+        dalian.setPndlDoiCount(1L);
+        dalian.setPndlYearCount(8L);
+        dalian.setBiomarkerCount(1L);
+        when(mapper.findRegion(
+                eq("city"),
+                eq("china|liaoning|dalian"),
+                any(), any(), any(), any(), any()))
+                .thenReturn(dalian);
+
+        MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
+        MapDetailResponse detail = service.getDetail(
+                "city",
+                "china|liaoning|dalian",
+                "R 呼吸系统药物",
+                "R05 咳嗽和感冒用药",
+                "R05D 镇咳药",
+                "125735",
+                "全部年份");
+
+        assertThat(detail.getSummaryCards())
+                .extracting(card -> card.getLabel() + "=" + card.getValue())
+                .contains("点位数=19", "文献数=1", "记录数=191", "PNDL 年份数=8")
+                .doesNotContain("点位数=4", "记录数=32");
+    }
+
+    @Test
+    void detailKeepsCoverageSourcesWhenPndlIsUnavailable() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse spain = stat(
+                "country",
+                "spain",
+                "西班牙",
+                "R05 咳嗽和感冒用药",
+                "R05D 镇咳药",
+                "125735",
+                "1",
+                3);
+        spain.setPndlMedianMgD1000inh(null);
+        spain.setCountry("Spain");
+        spain.setPointCount(3L);
+        spain.setDoiCount(1L);
+
+        MapSourceRecordResponse source = new MapSourceRecordResponse();
+        source.setMeasurementId(901L);
+        source.setCountry("Spain");
+        source.setCity("Barcelona");
+        source.setConcentrationValue(new BigDecimal("26"));
+        source.setConcentrationUnit("ng/L");
+
+        when(mapper.findRegion(
+                eq("country"),
+                eq("spain"),
+                any(), any(), any(), any(), any()))
+                .thenReturn(spain);
+        when(mapper.findSourceRecords(
+                eq("country"),
+                eq("spain"),
+                any(), any(), any(), any(), any(), any(Integer.class)))
+                .thenReturn(List.of(source));
+
+        MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
+        MapDetailResponse detail = service.getDetail(
+                "country",
+                "spain",
+                "R 呼吸系统药物",
+                "R05 咳嗽和感冒用药",
+                "R05D 镇咳药",
+                "125735",
+                "全部年份");
+
+        assertThat(detail.getRegion().getRecordCount()).isEqualTo(3L);
+        assertThat(detail.getRegion().getPndlMedianMgD1000inh()).isNull();
+        assertThat(detail.getSourceRecords()).singleElement().satisfies(record -> {
+            assertThat(record.getPndlMgD1000inh()).isNull();
+            assertThat(record.getConcentrationValue()).isEqualByComparingTo("26");
+            assertThat(record.getConcentrationUnit()).isEqualTo("ng/L");
+        });
     }
 
     private MapFilterRow filterRow(String category) {

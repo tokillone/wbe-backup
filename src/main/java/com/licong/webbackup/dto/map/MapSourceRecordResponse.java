@@ -21,4 +21,8 @@ public class MapSourceRecordResponse {
     private Integer originalRowNumber;
     private BigDecimal pndlMgD1000inh;
     private String pndlSource;
+    private BigDecimal concentrationValue;
+    private String concentrationUnit;
+    private BigDecimal dailyLoadValue;
+    private String dailyLoadUnit;
 }

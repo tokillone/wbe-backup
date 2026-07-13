@@ -921,9 +921,7 @@ public interface MapVisualizationMapper {
               AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
               AND (
                 (#{year} = '全部年份'
-                  AND year_label IS NOT NULL
-                  AND TRIM(year_label) != ''
-                  AND year_label != '全部年份')
+                  AND year_label = '全部年份')
                 OR (#{year} != '全部年份' AND year_label = #{year})
               )
               AND is_mappable = TRUE
@@ -1037,7 +1035,11 @@ public interface MapVisualizationMapper {
                   THEN m.plot_pndl_value
                 ELSE NULL
               END AS pndl_mg_d_1000inh,
-              CASE WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL' END AS pndl_source
+              CASE WHEN m.plot_pndl_value IS NOT NULL THEN '做图PNDL' END AS pndl_source,
+              m.plot_concentration_value AS concentration_value,
+              NULLIF(TRIM(m.plot_concentration_unit), '') AS concentration_unit,
+              m.daily_load_dls_value AS daily_load_value,
+              NULLIF(TRIM(m.daily_load_dls_unit), '') AS daily_load_unit
             FROM measurements m
             JOIN compounds c ON c.compound_id = m.compound_id
             JOIN sampling_events se ON se.event_id = m.event_id
@@ -1068,9 +1070,10 @@ public interface MapVisualizationMapper {
                   CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
                   '未标注年份'
                 ) = #{year})
-            HAVING pndl_mg_d_1000inh IS NOT NULL
-              AND pndl_mg_d_1000inh &gt; 0
-            ORDER BY pndl_mg_d_1000inh DESC, m.measurement_id ASC
+            ORDER BY
+              CASE WHEN pndl_mg_d_1000inh IS NULL OR pndl_mg_d_1000inh &lt;= 0 THEN 1 ELSE 0 END,
+              pndl_mg_d_1000inh DESC,
+              m.measurement_id ASC
             LIMIT #{limit}
             </script>
             """)

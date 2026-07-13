@@ -415,17 +415,11 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             return cards;
         }
         boolean specificBiomarker = selection != null && !ALL_BIOMARKERS.equals(selection.getBiomarkerKey());
-        long displayedPointCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlPointCount())
-                ? region.getPndlPointCount() : pointCount;
-        long displayedDoiCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlDoiCount())
-                ? region.getPndlDoiCount() : doiCount;
-        long displayedRecordCount = specificBiomarker && region != null && hasPositiveCount(region.getPndlRecordCount())
-                ? region.getPndlRecordCount() : recordCount;
         long biomarkerCount = region == null || region.getBiomarkerCount() == null ? 0 : region.getBiomarkerCount();
         long pndlYearCount = region == null || region.getPndlYearCount() == null ? 0 : region.getPndlYearCount();
-        cards.add(summaryCard("点位数", String.valueOf(displayedPointCount), "当前统计口径"));
-        cards.add(summaryCard("文献数", String.valueOf(displayedDoiCount), "去重 DOI"));
-        cards.add(summaryCard("记录数", String.valueOf(displayedRecordCount), "当前筛选"));
+        cards.add(summaryCard("点位数", String.valueOf(pointCount), "当前筛选覆盖的去重污水厂"));
+        cards.add(summaryCard("文献数", String.valueOf(doiCount), "当前筛选去重 DOI"));
+        cards.add(summaryCard("记录数", String.valueOf(recordCount), "当前筛选全部记录"));
         cards.add(summaryCard("biomarker 数", String.valueOf(biomarkerCount), "去重生物标记物"));
         if (specificBiomarker) {
             cards.add(summaryCard("PNDL 年份数", String.valueOf(pndlYearCount), "存在可比 PNDL 的年份"));
