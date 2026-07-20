@@ -61,7 +61,11 @@ WITH source_rows AS (
         CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
         '未标注年份'
       ) AS source_year,
-      wp.plant_id,
+      CASE
+        WHEN NULLIF(TRIM(rs.confirmed_site_id), '') IS NOT NULL
+          THEN CONCAT('C:', TRIM(rs.confirmed_site_id))
+        ELSE CONCAT('R:', se.reported_site_key)
+      END AS site_identity_key,
       wp.city AS source_city,
       c.doi,
       m.measurement_id,
@@ -76,6 +80,7 @@ WITH source_rows AS (
     JOIN compounds c ON c.compound_id = m.compound_id
     JOIN sampling_events se ON se.event_id = m.event_id
     JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+    JOIN reported_sites rs ON rs.reported_site_key = se.reported_site_key
     WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
 ),
 converted_rows AS (
@@ -238,7 +243,7 @@ SELECT
     city,
     latitude,
     longitude,
-    MIN(agg_target_class) AS target_class,
+    agg_target_class AS target_class,
     agg_category AS category,
     subcategory,
     biomarker_key,
@@ -267,11 +272,11 @@ SELECT
     COUNT(DISTINCT NULLIF(TRIM(doi), '')) AS doi_count,
     COUNT(DISTINCT CASE WHEN source_year <> '未标注年份' THEN source_year END) AS year_count,
     COUNT(DISTINCT NULLIF(TRIM(source_city), '')) AS city_count,
-    COUNT(DISTINCT plant_id) AS point_count,
+    COUNT(DISTINCT site_identity_key) AS point_count,
     COUNT(DISTINCT source_biomarker_key) AS biomarker_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN measurement_id END) AS pndl_record_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN NULLIF(TRIM(doi), '') END) AS pndl_doi_count,
-    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN plant_id END) AS pndl_point_count,
+    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN site_identity_key END) AS pndl_point_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 AND source_year <> '未标注年份' THEN source_year END) AS pndl_year_count,
     GROUP_CONCAT(DISTINCT pndl_source ORDER BY pndl_source SEPARATOR '、') AS pndl_sources,
     TRUE AS is_mappable,
@@ -287,6 +292,7 @@ GROUP BY
     city,
     latitude,
     longitude,
+    agg_target_class,
     agg_category,
     subcategory,
     biomarker_key,

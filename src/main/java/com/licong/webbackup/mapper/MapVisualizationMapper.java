@@ -94,7 +94,7 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -248,7 +248,7 @@ public interface MapVisualizationMapper {
               AND geo_key = #{geoKey}
               AND category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -300,7 +300,7 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -455,7 +455,7 @@ public interface MapVisualizationMapper {
             WHERE level = #{level}
               AND category = #{category}
               AND (
-                (#{category} = '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
                 OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
               )
               AND subcategory = #{subcategory}
@@ -479,7 +479,10 @@ public interface MapVisualizationMapper {
             FROM map_pndl_stats
             WHERE level = #{level}
               AND category = #{category}
-              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND (
+                (#{category} = '全部目标物质类别' AND target_class = #{targetClass})
+                OR (#{category} != '全部目标物质类别' AND (#{targetClass} = 'ALL' OR target_class = #{targetClass}))
+              )
               AND subcategory = #{subcategory}
               AND biomarker_key = #{biomarkerKey}
               AND year_label = #{year}
@@ -901,39 +904,56 @@ public interface MapVisualizationMapper {
     @Select("""
             <script>
             SELECT
-              biomarker_key,
-              COALESCE(NULLIF(TRIM(biomarker_label), ''), biomarker_key) AS biomarker_label,
-              MAX(biomarker_cas) AS biomarker_cas,
-              MIN(COALESCE(NULLIF(TRIM(target_class), ''), '未分类')) AS target_class,
-              MIN(category) AS category,
-              MIN(subcategory) AS subcategory,
-              SUM(record_count) AS record_count,
-              SUM(doi_count) AS doi_count,
-              SUM(point_count) AS point_count,
-              MAX(CASE WHEN pndl_median_mg_d_1000inh IS NOT NULL THEN 1 ELSE 0 END) AS has_pndl
-            FROM map_pndl_stats
-            WHERE (category IS NULL OR TRIM(category) = '' OR category != '全部目标物质类别')
-              AND (#{category} = '全部目标物质类别' OR category = #{category})
-              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(target_class), ''), '未分类') = #{targetClass})
-              AND (subcategory IS NULL OR TRIM(subcategory) = '' OR subcategory != '全部小类')
-              AND (#{subcategory} = '全部小类' OR subcategory = #{subcategory})
-              AND biomarker_key != 'ALL'
-              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
-              AND (
-                (#{year} = '全部年份'
-                  AND year_label = '全部年份')
-                OR (#{year} != '全部年份' AND year_label = #{year})
-              )
-              AND is_mappable = TRUE
-              <if test="locations != null and locations.size() &gt; 0">
-                AND (
+              COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) AS biomarker_key,
+              COALESCE(NULLIF(TRIM(c.biomarker_name), ''), c.drug_name) AS biomarker_label,
+              MAX(c.biomarker_cas) AS biomarker_cas,
+              MIN(COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类')) AS target_class,
+              MIN(c.substance_category) AS category,
+              MIN(COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类')) AS subcategory,
+              COUNT(DISTINCT m.measurement_id) AS record_count,
+              COUNT(DISTINCT NULLIF(TRIM(c.doi), '')) AS doi_count,
+              COUNT(DISTINCT CASE
+                WHEN NULLIF(TRIM(rs.confirmed_site_id), '') IS NOT NULL THEN CONCAT('C:', TRIM(rs.confirmed_site_id))
+                ELSE CONCAT('R:', rs.reported_site_key)
+              END) AS point_count,
+              MAX(CASE
+                WHEN m.plot_pndl_value &gt; 0
+                  AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.plot_pndl_unit, ''),
+                    'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP
+                    '^((mg|g|ug)/(day|d)/(1000|10000)?(inh|inhabitants|people|persons|person|capita|p|pop)|(mg|g|ug)/(1000|10000)?(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)).*$'
+                  THEN 1 ELSE 0
+              END) AS has_pndl
+            FROM measurements m
+            JOIN compounds c ON c.compound_id = m.compound_id
+            JOIN sampling_events se ON se.event_id = m.event_id
+            JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+            JOIN reported_sites rs ON rs.reported_site_key = se.reported_site_key
+            <if test="locations != null and locations.size() &gt; 0">
+              JOIN geo_locations gl ON gl.is_mappable = TRUE AND (
                 <foreach item="location" collection="locations" separator=" OR ">
-                  (level = #{location.level} AND geo_key = #{location.geoKey})
+                  (gl.level = #{location.level} AND gl.geo_key = #{location.geoKey} AND (
+                    (gl.level = 'country' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country)))
+                    OR (gl.level = 'admin1' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province)))
+                    OR (gl.level = 'city' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city)))
+                  ))
                 </foreach>
-                )
-              </if>
+              )
+            </if>
+            WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
+              AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL'
+                OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
+              AND (#{year} = '全部年份'
+                OR COALESCE(
+                  CASE WHEN LEFT(TRIM(se.sampling_start_ym), 4) REGEXP '^[0-9]{4}$' THEN LEFT(TRIM(se.sampling_start_ym), 4) END,
+                  CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
+                  '未标注年份'
+                ) = #{year})
             GROUP BY biomarker_key, biomarker_label
-            ORDER BY SUM(doi_count) DESC, SUM(record_count) DESC, SUM(point_count) DESC, biomarker_label ASC
+            ORDER BY doi_count DESC, record_count DESC, point_count DESC, biomarker_label ASC
             LIMIT #{limit}
             </script>
             """)

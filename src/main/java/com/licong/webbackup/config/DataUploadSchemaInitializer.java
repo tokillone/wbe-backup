@@ -1,8 +1,13 @@
 package com.licong.webbackup.config;
 
+import com.licong.webbackup.service.ReportedSiteIdentity;
 import jakarta.annotation.PostConstruct;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @Component
 public class DataUploadSchemaInitializer {
@@ -72,6 +77,8 @@ public class DataUploadSchemaInitializer {
                 WHERE status = 'PREVIEWED'
                 """);
         ensureBusinessUploadTraceSchema();
+        ensureReportedSiteSchema();
+        backfillReportedSites();
     }
 
     private void ensureWorkbookUploadSchema() {
@@ -320,6 +327,154 @@ public class DataUploadSchemaInitializer {
                     ON wastewater_plants(plant_name(120), country(80), province(80), city(80))
                     """);
         }
+    }
+
+    private void ensureReportedSiteSchema() {
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS confirmed_sites (
+                    confirmed_site_id VARCHAR(80) PRIMARY KEY,
+                    canonical_name VARCHAR(500) NULL,
+                    country VARCHAR(120) NOT NULL,
+                    province VARCHAR(120) NULL,
+                    city VARCHAR(120) NULL,
+                    detailed_address VARCHAR(500) NULL,
+                    latitude DECIMAL(12,8) NULL,
+                    longitude DECIMAL(12,8) NULL,
+                    status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+                    confirmation_evidence TEXT NOT NULL,
+                    confirmed_by BIGINT NULL,
+                    confirmed_at DATETIME NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_confirmed_sites_country (country),
+                    INDEX idx_confirmed_sites_coordinates (latitude, longitude)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人工确认的真实污水厂主表'
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS reported_sites (
+                    reported_site_key CHAR(64) PRIMARY KEY,
+                    literature_code VARCHAR(255) NOT NULL,
+                    raw_plant_name VARCHAR(500) NULL,
+                    sampling_site_code VARCHAR(255) NULL,
+                    country VARCHAR(120) NULL,
+                    province VARCHAR(120) NULL,
+                    city VARCHAR(120) NULL,
+                    detailed_address VARCHAR(500) NULL,
+                    latitude DECIMAL(12,8) NULL,
+                    longitude DECIMAL(12,8) NULL,
+                    key_quality VARCHAR(24) NOT NULL,
+                    confirmed_site_id VARCHAR(80) NULL,
+                    confirmation_evidence TEXT NULL,
+                    confirmed_by BIGINT NULL,
+                    confirmed_at DATETIME NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_reported_sites_literature (literature_code),
+                    INDEX idx_reported_sites_confirmed (confirmed_site_id),
+                    INDEX idx_reported_sites_geo (country, province, city),
+                    CONSTRAINT fk_reported_sites_confirmed FOREIGN KEY (confirmed_site_id)
+                        REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文献内报告的污水厂或采样点位'
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS reported_site_confirmation_audit (
+                    audit_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    reported_site_key CHAR(64) NOT NULL,
+                    previous_confirmed_site_id VARCHAR(80) NULL,
+                    confirmed_site_id VARCHAR(80) NOT NULL,
+                    confirmation_evidence TEXT NOT NULL,
+                    reviewed_by BIGINT NULL,
+                    reviewed_at DATETIME NOT NULL,
+                    upload_id BIGINT NULL,
+                    action VARCHAR(24) NOT NULL DEFAULT 'CONFIRM',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_site_confirmation_reported (reported_site_key, reviewed_at),
+                    INDEX idx_site_confirmation_confirmed (confirmed_site_id),
+                    CONSTRAINT fk_site_confirmation_reported FOREIGN KEY (reported_site_key)
+                        REFERENCES reported_sites(reported_site_key) ON DELETE RESTRICT,
+                    CONSTRAINT fk_site_confirmation_confirmed FOREIGN KEY (confirmed_site_id)
+                        REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='跨文献真实点位人工确认审计'
+                """);
+        if (tableExists("sampling_events")) {
+            ensureTableColumn("sampling_events", "reported_site_key",
+                    "CHAR(64) NULL COMMENT '文献内报告点位稳定键'");
+            ensureIndex("sampling_events", "idx_sampling_events_reported_site", """
+                    CREATE INDEX idx_sampling_events_reported_site
+                    ON sampling_events(reported_site_key)
+                    """);
+        }
+    }
+
+    private void backfillReportedSites() {
+        if (!tableExists("measurements") || !tableExists("sampling_events") || !tableExists("wastewater_plants")) {
+            return;
+        }
+        List<LegacySiteRow> rows = jdbcTemplate.query("""
+                        SELECT se.event_id,
+                               COALESCE(NULLIF(TRIM(m.literature_code), ''), '__missing_literature__') AS literature_code,
+                               wp.plant_name, wp.country, wp.province, wp.city
+                        FROM sampling_events se
+                        JOIN measurements m ON m.event_id = se.event_id
+                        JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+                        WHERE se.reported_site_key IS NULL OR TRIM(se.reported_site_key) = ''
+                        """,
+                (rs, rowNum) -> new LegacySiteRow(
+                        rs.getLong("event_id"),
+                        rs.getString("literature_code"),
+                        rs.getString("plant_name"),
+                        rs.getString("country"),
+                        rs.getString("province"),
+                        rs.getString("city")));
+        if (rows.isEmpty()) return;
+
+        Map<String, ReportedSiteSeed> sites = new LinkedHashMap<>();
+        for (LegacySiteRow row : rows) {
+            ReportedSiteIdentity.Identity identity = ReportedSiteIdentity.create(
+                    row.literatureCode(), row.country(), row.province(), row.city(), null, row.plantName());
+            sites.putIfAbsent(identity.reportedSiteKey(), new ReportedSiteSeed(
+                    identity.reportedSiteKey(), row.literatureCode(), row.plantName(), row.country(),
+                    row.province(), row.city(), identity.keyQuality()));
+        }
+        jdbcTemplate.batchUpdate("""
+                        INSERT INTO reported_sites (
+                            reported_site_key, literature_code, raw_plant_name,
+                            country, province, city, key_quality
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            literature_code = VALUES(literature_code),
+                            raw_plant_name = VALUES(raw_plant_name),
+                            country = VALUES(country),
+                            province = VALUES(province),
+                            city = VALUES(city),
+                            key_quality = VALUES(key_quality)
+                        """,
+                sites.values(), sites.size(),
+                (ps, site) -> {
+                    ps.setString(1, site.reportedSiteKey());
+                    ps.setString(2, site.literatureCode());
+                    ps.setString(3, site.plantName());
+                    ps.setString(4, site.country());
+                    ps.setString(5, site.province());
+                    ps.setString(6, site.city());
+                    ps.setString(7, site.keyQuality());
+                });
+        jdbcTemplate.batchUpdate("UPDATE sampling_events SET reported_site_key = ? WHERE event_id = ?",
+                rows, rows.size(),
+                (ps, row) -> {
+                    ReportedSiteIdentity.Identity identity = ReportedSiteIdentity.create(
+                            row.literatureCode(), row.country(), row.province(), row.city(), null, row.plantName());
+                    ps.setString(1, identity.reportedSiteKey());
+                    ps.setLong(2, row.eventId());
+                });
+    }
+
+    private record LegacySiteRow(long eventId, String literatureCode, String plantName,
+                                 String country, String province, String city) {
+    }
+
+    private record ReportedSiteSeed(String reportedSiteKey, String literatureCode, String plantName,
+                                    String country, String province, String city, String keyQuality) {
     }
 
     private boolean tableExists(String tableName) {

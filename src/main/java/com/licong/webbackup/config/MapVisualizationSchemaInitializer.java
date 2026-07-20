@@ -2,6 +2,7 @@ package com.licong.webbackup.config;
 
 import jakarta.annotation.PostConstruct;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.stereotype.Component;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Component;
 import javax.sql.DataSource;
 
 @Component
+@DependsOn("dataUploadSchemaInitializer")
 public class MapVisualizationSchemaInitializer {
 
     private final JdbcTemplate jdbcTemplate;

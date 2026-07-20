@@ -169,9 +169,63 @@ class DataUploadServiceIntegrationTest {
                 )
                 """);
         jdbcTemplate.execute("""
+                CREATE TABLE confirmed_sites (
+                    confirmed_site_id VARCHAR(80) PRIMARY KEY,
+                    canonical_name VARCHAR(500),
+                    country VARCHAR(120) NOT NULL,
+                    province VARCHAR(120),
+                    city VARCHAR(120),
+                    detailed_address VARCHAR(500),
+                    latitude DECIMAL(12,8),
+                    longitude DECIMAL(12,8),
+                    status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+                    confirmation_evidence CLOB NOT NULL,
+                    confirmed_by BIGINT,
+                    confirmed_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE reported_sites (
+                    reported_site_key CHAR(64) PRIMARY KEY,
+                    literature_code VARCHAR(255) NOT NULL,
+                    raw_plant_name VARCHAR(500),
+                    sampling_site_code VARCHAR(255),
+                    country VARCHAR(120),
+                    province VARCHAR(120),
+                    city VARCHAR(120),
+                    detailed_address VARCHAR(500),
+                    latitude DECIMAL(12,8),
+                    longitude DECIMAL(12,8),
+                    key_quality VARCHAR(24) NOT NULL,
+                    confirmed_site_id VARCHAR(80),
+                    confirmation_evidence CLOB,
+                    confirmed_by BIGINT,
+                    confirmed_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE reported_site_confirmation_audit (
+                    audit_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    reported_site_key CHAR(64) NOT NULL,
+                    previous_confirmed_site_id VARCHAR(80),
+                    confirmed_site_id VARCHAR(80) NOT NULL,
+                    confirmation_evidence CLOB NOT NULL,
+                    reviewed_by BIGINT,
+                    reviewed_at TIMESTAMP NOT NULL,
+                    upload_id BIGINT,
+                    action VARCHAR(24) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """);
+        jdbcTemplate.execute("""
                 CREATE TABLE sampling_events (
                     event_id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     plant_id BIGINT NOT NULL,
+                    reported_site_key CHAR(64),
                     sample_collection_time TIMESTAMP,
                     sampling_start_ym VARCHAR(7),
                     sampling_end_ym VARCHAR(7),
@@ -436,6 +490,13 @@ class DataUploadServiceIntegrationTest {
                 (rs, rowNum) -> rs.getTimestamp(1).toLocalDateTime()
         );
         assertThat(collectionTime).isEqualTo(LocalDateTime.of(2025, 6, 15, 10, 30));
+        String reportedSiteKey = jdbcTemplate.queryForObject(
+                "SELECT reported_site_key FROM sampling_events", String.class);
+        assertThat(reportedSiteKey).hasSize(64);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM reported_sites WHERE reported_site_key = ? AND literature_code = 'LIT-TRACE'",
+                Integer.class,
+                reportedSiteKey)).isEqualTo(1);
         Map<String, Object> rowState = jdbcTemplate.queryForMap(
                 """
                 SELECT row_status, synced_measurement_id
@@ -449,6 +510,67 @@ class DataUploadServiceIntegrationTest {
         assertThatThrownBy(() -> service.reject(uploadId, reviewer, "too late"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("已入库批次不能驳回");
+    }
+
+    @Test
+    void confirmedSiteRequiresEvidenceDuringPreview() throws Exception {
+        User admin = insertUser(1L, "site-admin", "admin", false, false, false, true);
+        byte[] workbook = workbookWithDataFields("LIT-SITE-EVIDENCE", Map.of(
+                "confirmed_site_id", "CN-SITE-001"
+        ));
+
+        DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+
+        assertThat(preview.getBatch().getErrorRows()).isPositive();
+        assertThat(preview.getPreviewRowsBySheet().get("数据表").get(0).getErrors())
+                .anyMatch(message -> message.contains("点位确认依据"));
+    }
+
+    @Test
+    void confirmedSiteCannotBeReusedAcrossCountries() throws Exception {
+        User admin = insertUser(1L, "site-admin", "admin", false, false, false, true);
+        jdbcTemplate.update("""
+                INSERT INTO confirmed_sites (
+                    confirmed_site_id, canonical_name, country, confirmation_evidence, confirmed_at
+                ) VALUES ('SITE-CROSS-COUNTRY', 'Existing site', '新西兰', '人工核查', CURRENT_TIMESTAMP)
+                """);
+        byte[] workbook = workbookWithDataFields("LIT-SITE-COUNTRY", Map.of(
+                "confirmed_site_id", "SITE-CROSS-COUNTRY",
+                "点位确认依据", "同一官方名称和地址"
+        ));
+
+        DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+
+        assertThat(preview.getBatch().getErrorRows()).isPositive();
+        assertThat(preview.getPreviewRowsBySheet().get("数据表").get(0).getErrors())
+                .anyMatch(message -> message.contains("已归属其他国家"));
+    }
+
+    @Test
+    void approvedConfirmationPersistsMasterAssignmentAndAudit() throws Exception {
+        User admin = insertUser(1L, "site-admin", "admin", false, false, false, true);
+        byte[] workbook = workbookWithDataFields("LIT-SITE-CONFIRMED", Map.of(
+                "采样点编号", "WWTP-01",
+                "污水厂详细地址", "浙江省宁波市测试路 1 号",
+                "污水厂纬度", "29.8683",
+                "污水厂经度", "121.5440",
+                "confirmed_site_id", "CN-NB-0001",
+                "点位确认依据", "官方名称、详细地址和经纬度一致"
+        ));
+        DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+        service.approve(preview.getBatch().getUploadId(), admin);
+
+        service.sync(preview.getBatch().getUploadId(), admin);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM confirmed_sites WHERE confirmed_site_id = 'CN-NB-0001' AND country = '中国'",
+                Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM reported_sites WHERE confirmed_site_id = 'CN-NB-0001' AND sampling_site_code = 'WWTP-01'",
+                Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM reported_site_confirmation_audit WHERE confirmed_site_id = 'CN-NB-0001' AND reviewed_by = 1",
+                Integer.class)).isEqualTo(1);
     }
 
     @Test
@@ -753,6 +875,23 @@ class DataUploadServiceIntegrationTest {
             for (int i = 0; i < DataUploadService.ICD11_HEADERS.size(); i++) {
                 String header = DataUploadService.ICD11_HEADERS.get(i);
                 mappingRow.createCell(i).setCellValue(mappingValues.getOrDefault(header, ""));
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] workbookWithDataFields(String literatureCode, Map<String, String> additions) throws Exception {
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(validWorkbook(literatureCode)));
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.getSheet("数据表");
+            Row row = sheet.getRow(1);
+            List<String> headers = new ArrayList<>(DataUploadService.REQUIRED_HEADERS);
+            headers.addAll(DataUploadService.OPTIONAL_HEADERS);
+            for (Map.Entry<String, String> entry : additions.entrySet()) {
+                int index = headers.indexOf(entry.getKey());
+                if (index < 0) throw new IllegalArgumentException("Unknown upload field: " + entry.getKey());
+                row.getCell(index, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK).setCellValue(entry.getValue());
             }
             workbook.write(output);
             return output.toByteArray();

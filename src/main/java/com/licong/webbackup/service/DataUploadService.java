@@ -177,7 +177,16 @@ public class DataUploadService {
             "keywords",
             "abstract"
     );
-    public static final List<String> OPTIONAL_HEADERS = List.of("来源工作簿说明", "原表行号说明");
+    public static final List<String> OPTIONAL_HEADERS = List.of(
+            "来源工作簿说明",
+            "原表行号说明",
+            "采样点编号",
+            "污水厂详细地址",
+            "污水厂纬度",
+            "污水厂经度",
+            "confirmed_site_id",
+            "点位确认依据"
+    );
     public static final List<String> ICD11_HEADERS = List.of(
             "目标类别", "目标物质类别", "目标物质子类", "药物", "适应症原文",
             "生物标记物名称", "biomarker", "规范适应症短语", "疾病实体短语",
@@ -670,7 +679,8 @@ public class DataUploadService {
             insertedRowsBySheet.put(LITERATURE_SHEET_NAME, rowsBySheet.get(LITERATURE_SHEET_NAME).size());
 
             for (DataUploadRowResponse row : rowsBySheet.get(DATA_SHEET_NAME)) {
-                Long measurementId = syncSnapshotDataRow(batch.uploadId(), row);
+                Long measurementId = syncSnapshotDataRow(
+                        batch.uploadId(), row, batch.reviewedBy() == null ? user.getUserId() : batch.reviewedBy());
                 insertHomeTargetRecord(row, literatureDois);
                 markSynced(row, "MEASUREMENT", measurementId, measurementId);
             }
@@ -752,14 +762,15 @@ public class DataUploadService {
         return getBatch(uploadId);
     }
 
-    private Long syncSnapshotDataRow(Long uploadId, DataUploadRowResponse row) throws IOException {
+    private Long syncSnapshotDataRow(Long uploadId, DataUploadRowResponse row, Long reviewedBy) throws IOException {
         Map<String, String> data = row.getData();
         Long compoundId = getOrCreateCompound(data);
         Long methodId = getOrCreateMethod(data);
         Long plantId = getOrCreatePlant(data);
+        String reportedSiteKey = upsertReportedSite(data, uploadId, reviewedBy);
         String dedupeKey = sha256(("wbe-snapshot-v1\u001F" + uploadId + "\u001F" + row.getRowId())
                 .getBytes(StandardCharsets.UTF_8));
-        Long eventId = insertSamplingEvent(data, plantId);
+        Long eventId = insertSamplingEvent(data, plantId, reportedSiteKey);
         return insertMeasurement(data, compoundId, methodId, eventId, uploadId, row.getRowId(), dedupeKey);
     }
 
@@ -1000,8 +1011,8 @@ public class DataUploadService {
             Row row = sheet.createRow(rowIndex++);
             setCell(row, 0, field, bodyStyle);
             setCell(row, 1, "可选追踪列", bodyStyle);
-            setCell(row, 2, "sampling_events / 上传审计", bodyStyle);
-            setCell(row, 3, "用于重复检查和来源追踪；没有可留空。", bodyStyle);
+            setCell(row, 2, targetTableForOptionalField(field), bodyStyle);
+            setCell(row, 3, optionalFieldGuide(field), bodyStyle);
         }
 
         sheet.createFreezePane(0, 3);
@@ -1025,7 +1036,7 @@ public class DataUploadService {
                 new String[]{"格式要求", "文件类型", "仅支持 .xlsx 文件。"},
                 new String[]{"格式要求", "工作表名称", "必须保留名为“数据表”的 sheet。"},
                 new String[]{"格式要求", "表头规则", "“数据表”第 1 行前 58 列必须与字段清单完全一致；不要调整顺序。"},
-                new String[]{"格式要求", "可选列", "可保留“来源工作簿说明 / 原表行号说明”，用于重复检查和审计。"},
+                new String[]{"格式要求", "可选列", "可填写采样点编号、详细地址、经纬度和人工确认点位字段；confirmed_site_id 有值时必须填写点位确认依据。"},
                 new String[]{"数据规则", "NA / ND / <LOD / <LOQ", "系统会保留原始值；可入 DECIMAL 的部分入库，无法入库的数值列写入 NULL 并给出警告。"},
                 new String[]{"同步规则", "审核与同步", "上传校验通过后先进入待审核队列；审核通过后，再由具备同步权限的人员入库。"},
                 new String[]{"同步规则", "重复控制", "相同 SHA256 文件默认阻断；管理员显式放行后，入库时仍会按追溯字段和业务键检查重复。"}
@@ -1174,6 +1185,28 @@ public class DataUploadService {
             return "三者至少填写一个，用于形成目标物记录。";
         }
         return "按 WBE 汇总表原字段填写；无数据时可填写 NA。";
+    }
+
+    private String targetTableForOptionalField(String field) {
+        if (List.of("采样点编号", "污水厂详细地址", "污水厂纬度", "污水厂经度").contains(field)) {
+            return "reported_sites";
+        }
+        if (List.of("confirmed_site_id", "点位确认依据").contains(field)) {
+            return "confirmed_sites / 确认审计";
+        }
+        return "sampling_events / 上传审计";
+    }
+
+    private String optionalFieldGuide(String field) {
+        return switch (field) {
+            case "采样点编号" -> "文献内点位标识，优先于污水厂名称参与 reported_site_key 计算。";
+            case "污水厂详细地址" -> "用于人工核查真实污水厂，不会自动触发跨文献合并。";
+            case "污水厂纬度" -> "十进制度数，范围 -90 至 90，仅作为人工核查证据。";
+            case "污水厂经度" -> "十进制度数，范围 -180 至 180，仅作为人工核查证据。";
+            case "confirmed_site_id" -> "人工确认的真实污水厂 ID；填写后必须同时填写点位确认依据。";
+            case "点位确认依据" -> "说明同名、地址、坐标或同一项目等明确证据，随审核记录持久化。";
+            default -> "用于重复检查和来源追踪；没有可留空。";
+        };
     }
 
     private Long getOrCreateCompound(Map<String, String> data) {
@@ -1371,19 +1404,134 @@ public class DataUploadService {
         );
     }
 
-    private Long insertSamplingEvent(Map<String, String> data, Long plantId) {
+    private String upsertReportedSite(Map<String, String> data, Long uploadId, Long reviewedBy) {
+        ReportedSiteIdentity.Identity identity = reportedSiteIdentity(data);
+        String reportedSiteKey = identity.reportedSiteKey();
+        String confirmedSiteId = valueOrNull(data.get("confirmed_site_id"));
+        String evidence = valueOrNull(data.get("点位确认依据"));
+        String country = valueOrNull(data.get("污水厂位置_国"));
+        String existingAssignment = queryOptionalString(
+                "SELECT confirmed_site_id FROM reported_sites WHERE reported_site_key = ?", reportedSiteKey);
+
+        if (confirmedSiteId != null) {
+            if (evidence == null) {
+                throw new BusinessException("confirmed_site_id 必须提供点位确认依据");
+            }
+            if (country == null) {
+                throw new BusinessException("人工确认真实点位时必须填写国家");
+            }
+            String existingCountry = queryOptionalString(
+                    "SELECT country FROM confirmed_sites WHERE confirmed_site_id = ?", confirmedSiteId);
+            if (existingCountry != null
+                    && !ReportedSiteIdentity.normalize(existingCountry).equals(ReportedSiteIdentity.normalize(country))) {
+                throw new BusinessException("confirmed_site_id “" + confirmedSiteId + "”不能跨国家复用");
+            }
+            if (existingAssignment != null && !existingAssignment.equals(confirmedSiteId)) {
+                throw new BusinessException("文献内点位已绑定其他 confirmed_site_id，不能直接改绑");
+            }
+            jdbcTemplate.update("""
+                            INSERT INTO confirmed_sites (
+                                confirmed_site_id, canonical_name, country, province, city,
+                                detailed_address, latitude, longitude, confirmation_evidence,
+                                confirmed_by, confirmed_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                            ON DUPLICATE KEY UPDATE
+                                canonical_name = COALESCE(NULLIF(VALUES(canonical_name), ''), canonical_name),
+                                province = COALESCE(NULLIF(VALUES(province), ''), province),
+                                city = COALESCE(NULLIF(VALUES(city), ''), city),
+                                detailed_address = COALESCE(NULLIF(VALUES(detailed_address), ''), detailed_address),
+                                latitude = COALESCE(VALUES(latitude), latitude),
+                                longitude = COALESCE(VALUES(longitude), longitude),
+                                confirmation_evidence = VALUES(confirmation_evidence),
+                                confirmed_by = VALUES(confirmed_by),
+                                confirmed_at = VALUES(confirmed_at)
+                            """,
+                    confirmedSiteId,
+                    valueOrNull(data.get("污水厂名称")),
+                    country,
+                    valueOrNull(data.get("污水厂位置_省")),
+                    valueOrNull(data.get("污水厂位置_市")),
+                    valueOrNull(data.get("污水厂详细地址")),
+                    parseDecimalForDatabase(data.get("污水厂纬度")),
+                    parseDecimalForDatabase(data.get("污水厂经度")),
+                    evidence,
+                    reviewedBy);
+        }
+
+        jdbcTemplate.update("""
+                        INSERT INTO reported_sites (
+                            reported_site_key, literature_code, raw_plant_name, sampling_site_code,
+                            country, province, city, detailed_address, latitude, longitude,
+                            key_quality, confirmed_site_id, confirmation_evidence, confirmed_by, confirmed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE NOW() END)
+                        ON DUPLICATE KEY UPDATE
+                            raw_plant_name = VALUES(raw_plant_name),
+                            sampling_site_code = VALUES(sampling_site_code),
+                            country = VALUES(country),
+                            province = VALUES(province),
+                            city = VALUES(city),
+                            detailed_address = COALESCE(NULLIF(VALUES(detailed_address), ''), detailed_address),
+                            latitude = COALESCE(VALUES(latitude), latitude),
+                            longitude = COALESCE(VALUES(longitude), longitude),
+                            key_quality = VALUES(key_quality),
+                            confirmed_site_id = COALESCE(VALUES(confirmed_site_id), confirmed_site_id),
+                            confirmation_evidence = COALESCE(VALUES(confirmation_evidence), confirmation_evidence),
+                            confirmed_by = COALESCE(VALUES(confirmed_by), confirmed_by),
+                            confirmed_at = CASE WHEN VALUES(confirmed_site_id) IS NULL THEN confirmed_at ELSE VALUES(confirmed_at) END
+                        """,
+                reportedSiteKey,
+                valueOrFallback(data.get("文献编号"), "__missing_literature__"),
+                valueOrNull(data.get("污水厂名称")),
+                valueOrNull(data.get("采样点编号")),
+                country,
+                valueOrNull(data.get("污水厂位置_省")),
+                valueOrNull(data.get("污水厂位置_市")),
+                valueOrNull(data.get("污水厂详细地址")),
+                parseDecimalForDatabase(data.get("污水厂纬度")),
+                parseDecimalForDatabase(data.get("污水厂经度")),
+                identity.keyQuality(),
+                confirmedSiteId,
+                evidence,
+                confirmedSiteId == null ? null : reviewedBy,
+                confirmedSiteId);
+
+        if (confirmedSiteId != null && existingAssignment == null) {
+            jdbcTemplate.update("""
+                            INSERT INTO reported_site_confirmation_audit (
+                                reported_site_key, previous_confirmed_site_id, confirmed_site_id,
+                                confirmation_evidence, reviewed_by, reviewed_at, upload_id, action
+                            ) VALUES (?, NULL, ?, ?, ?, NOW(), ?, 'CONFIRM')
+                            """,
+                    reportedSiteKey, confirmedSiteId, evidence, reviewedBy, uploadId);
+        }
+        return reportedSiteKey;
+    }
+
+    private ReportedSiteIdentity.Identity reportedSiteIdentity(Map<String, String> data) {
+        return ReportedSiteIdentity.create(
+                data.get("文献编号"),
+                data.get("污水厂位置_国"),
+                data.get("污水厂位置_省"),
+                data.get("污水厂位置_市"),
+                data.get("采样点编号"),
+                data.get("污水厂名称"));
+    }
+
+    private Long insertSamplingEvent(Map<String, String> data, Long plantId, String reportedSiteKey) {
         return insertAndReturnKey("""
                         INSERT INTO sampling_events (
                             plant_id,
+                            reported_site_key,
                             sample_collection_time,
                             sampling_start_ym,
                             sampling_end_ym,
                             source_workbook,
                             original_row_number
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 plantId,
+                reportedSiteKey,
                 parseDateTimeForDatabase(data.get("样品采集时间")),
                 valueOrNull(data.get("采样开始时间_YYYY_MM")),
                 valueOrNull(data.get("采样结束时间_YYYY_MM")),
@@ -1557,8 +1705,21 @@ public class DataUploadService {
             warnings.add("药物为空，入库时将使用生物标记物名称或 biomarker 作为药物名称兜底");
         }
         if (!isUseful(data.get("污水厂名称"))) {
-            warnings.add("污水厂名称为空或 NA，入库时将按当前设计使用 NA 作为站点名称");
+            if (!isUseful(data.get("采样点编号"))) {
+                warnings.add("污水厂名称和采样点编号均为空，将按同一文献内同一国家、省州、市合并为一个低置信度点位");
+            } else {
+                warnings.add("污水厂名称为空，将使用采样点编号标识文献内点位");
+            }
         }
+        String confirmedSiteId = valueOrNull(data.get("confirmed_site_id"));
+        if (confirmedSiteId != null && !isUseful(data.get("点位确认依据"))) {
+            errors.add("填写 confirmed_site_id 时必须填写点位确认依据，并经过上传审核");
+        }
+        if (confirmedSiteId != null && !isUseful(data.get("污水厂位置_国"))) {
+            errors.add("填写 confirmed_site_id 时必须填写污水厂位置_国");
+        }
+        validateCoordinate(data.get("污水厂纬度"), "污水厂纬度", new BigDecimal("-90"), new BigDecimal("90"), errors);
+        validateCoordinate(data.get("污水厂经度"), "污水厂经度", new BigDecimal("-180"), new BigDecimal("180"), errors);
         if (isUseful(data.get("样品采集时间")) && parseSampleCollectionTime(data.get("样品采集时间"), warnings) == null) {
             // parseSampleCollectionTime already records a field-level warning.
         }
@@ -1566,6 +1727,18 @@ public class DataUploadService {
             warnings.add("来源工作簿说明或原表行号说明缺失，系统将使用文献编号、采样信息和测量值生成重复判断键");
         }
         validateDecimalFields(data, warnings);
+    }
+
+    private void validateCoordinate(String rawValue,
+                                    String field,
+                                    BigDecimal minimum,
+                                    BigDecimal maximum,
+                                    List<String> errors) {
+        if (!isUseful(rawValue)) return;
+        BigDecimal value = parseDecimalForDatabase(rawValue);
+        if (value == null || value.compareTo(minimum) < 0 || value.compareTo(maximum) > 0) {
+            errors.add(field + "必须是 " + minimum.toPlainString() + " 至 " + maximum.toPlainString() + " 之间的十进制度数");
+        }
     }
 
     private void validateIcd11Row(Map<String, String> data, List<String> errors, List<String> warnings) {
@@ -1613,6 +1786,8 @@ public class DataUploadService {
                         row.errors().add("文献编号“" + code + "”未在文献基础信息中定义");
                     }
                 });
+
+        validateReportedSiteConfirmations(rows);
 
         rows.stream()
                 .filter(row -> ICD11_SHEET_NAME.equals(row.sheetName()))
@@ -1663,6 +1838,46 @@ public class DataUploadService {
         List<String> headers = new ArrayList<>(REQUIRED_HEADERS);
         headers.addAll(OPTIONAL_HEADERS);
         return headers;
+    }
+
+    private void validateReportedSiteConfirmations(List<ParsedRow> rows) {
+        Map<String, String> confirmedByReportedKey = new LinkedHashMap<>();
+        Map<String, String> countryByConfirmedId = new LinkedHashMap<>();
+        Map<String, String> existingConfirmedCountries = new LinkedHashMap<>();
+        Map<String, String> existingAssignments = new LinkedHashMap<>();
+        for (ParsedRow row : rows) {
+            if (!DATA_SHEET_NAME.equals(row.sheetName())) continue;
+            Map<String, String> data = row.data();
+            ReportedSiteIdentity.Identity identity = reportedSiteIdentity(data);
+            String confirmedSiteId = valueOrNull(data.get("confirmed_site_id"));
+            if (confirmedSiteId == null) continue;
+            String country = ReportedSiteIdentity.normalize(data.get("污水厂位置_国"));
+
+            String priorForKey = confirmedByReportedKey.putIfAbsent(identity.reportedSiteKey(), confirmedSiteId);
+            if (priorForKey != null && !priorForKey.equals(confirmedSiteId)) {
+                row.errors().add("同一文献内点位不能绑定多个 confirmed_site_id");
+            }
+            String priorCountry = countryByConfirmedId.putIfAbsent(confirmedSiteId, country);
+            if (priorCountry != null && !priorCountry.equals(country)) {
+                row.errors().add("confirmed_site_id “" + confirmedSiteId + "”不能跨国家使用");
+            }
+
+            if (tableExists("confirmed_sites")) {
+                String existingCountry = existingConfirmedCountries.computeIfAbsent(confirmedSiteId, id -> queryOptionalString(
+                        "SELECT country FROM confirmed_sites WHERE confirmed_site_id = ?", id));
+                if (existingCountry != null
+                        && !ReportedSiteIdentity.normalize(existingCountry).equals(country)) {
+                    row.errors().add("confirmed_site_id “" + confirmedSiteId + "”已归属其他国家");
+                }
+            }
+            if (tableExists("reported_sites")) {
+                String existingAssignment = existingAssignments.computeIfAbsent(identity.reportedSiteKey(), key -> queryOptionalString(
+                        "SELECT confirmed_site_id FROM reported_sites WHERE reported_site_key = ?", key));
+                if (existingAssignment != null && !existingAssignment.equals(confirmedSiteId)) {
+                    row.errors().add("该文献内点位已经人工确认，不能通过工作簿直接改绑 confirmed_site_id");
+                }
+            }
+        }
     }
 
     private List<String> splitSourceList(String value) {
@@ -2024,6 +2239,14 @@ public class DataUploadService {
         }
     }
 
+    private String queryOptionalString(String sql, Object... args) {
+        try {
+            return jdbcTemplate.queryForObject(sql, String.class, args);
+        } catch (EmptyResultDataAccessException ex) {
+            return null;
+        }
+    }
+
     private boolean tableExists(String tableName) {
         Integer count = jdbcTemplate.queryForObject("""
                         SELECT COUNT(*)
@@ -2070,7 +2293,8 @@ public class DataUploadService {
                             rs.getString("file_name"),
                             rs.getString("stored_file_path"),
                             rs.getLong("uploaded_by"),
-                            rs.getString("status")
+                            rs.getString("status"),
+                            (Long) rs.getObject("reviewed_by")
                     ),
                     uploadId
             );
@@ -2092,7 +2316,8 @@ public class DataUploadService {
                             rs.getString("file_name"),
                             rs.getString("stored_file_path"),
                             rs.getLong("uploaded_by"),
-                            rs.getString("status")
+                            rs.getString("status"),
+                            (Long) rs.getObject("reviewed_by")
                     ),
                     uploadId
             );
@@ -2253,6 +2478,7 @@ public class DataUploadService {
         }
     }
 
-    private record BatchRecord(Long uploadId, String fileName, String storedFilePath, Long uploadedBy, String status) {
+    private record BatchRecord(Long uploadId, String fileName, String storedFilePath, Long uploadedBy,
+                               String status, Long reviewedBy) {
     }
 }

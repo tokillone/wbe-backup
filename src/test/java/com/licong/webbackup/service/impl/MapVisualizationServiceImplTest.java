@@ -76,7 +76,7 @@ class MapVisualizationServiceImplTest {
     }
 
     @Test
-    void allCategoryStatsFallBackWhenExactAggregateHasZeroCounts() {
+    void allCategoryStatsDoNotMergeConcreteRowsWhenExactAggregateHasZeroCounts() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         MapRegionStatResponse zeroAggregate = stat(
                 "city",
@@ -112,13 +112,12 @@ class MapVisualizationServiceImplTest {
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
         MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
 
-        assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
-        assertThat(stats.getRegions().get(0).getPndlMedianMgD1000inh()).isNull();
+        assertThat(stats.getRegions()).containsExactly(zeroAggregate);
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void allCategoryStatsFallBackToMergedConcreteCategories() {
+    void allCategoryStatsStayEmptyInsteadOfSummingConcreteCategoryPointCounts() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(
                 eq("全部目标物质类别"),
@@ -143,15 +142,13 @@ class MapVisualizationServiceImplTest {
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
         MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
 
-        assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getPoints()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getCategory()).isEqualTo("全部目标物质类别");
-        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
-        assertThat(stats.getRegions().get(0).getPndlMedianMgD1000inh()).isNull();
+        assertThat(stats.getRegions()).isEmpty();
+        assertThat(stats.getPoints()).isEmpty();
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void allCategoryStatsAcceptDisplayAllShorthand() {
+    void allCategoryDisplayAllShorthandDoesNotSynthesizeMissingAggregate() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(
                 eq("全部目标物质类别"),
@@ -175,15 +172,12 @@ class MapVisualizationServiceImplTest {
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
         MapStatsResponse stats = service.getStats("全部", "全部", "全部", "全部", "全部", "city");
 
-        assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getCategory()).isEqualTo("全部目标物质类别");
-        assertThat(stats.getRegions().get(0).getSubcategory()).isEqualTo("全部小类");
-        assertThat(stats.getRegions().get(0).getBiomarkerKey()).isEqualTo("ALL");
-        assertThat(stats.getRegions().get(0).getYearLabel()).isEqualTo("全部年份");
+        assertThat(stats.getRegions()).isEmpty();
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void allCategoryStatsFallBackToMergedConcreteYears() {
+    void allCategoryStatsDoNotMergeConcreteYears() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(
                 eq("全部目标物质类别"),
@@ -208,13 +202,12 @@ class MapVisualizationServiceImplTest {
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
         MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
 
-        assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
-        assertThat(stats.getRegions().get(0).getPndlSources()).isEqualTo("多类别合并显示");
+        assertThat(stats.getRegions()).isEmpty();
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void allCategoryFallbackIgnoresIncompleteAllAggregates() {
+    void incompleteConcreteRowsNeverReplaceMissingExactAggregate() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         when(mapper.findStats(
                 eq("全部目标物质类别"),
@@ -240,9 +233,8 @@ class MapVisualizationServiceImplTest {
         MapVisualizationServiceImpl service = new MapVisualizationServiceImpl(mapper);
         MapStatsResponse stats = service.getStats("ALL", "全部目标物质类别", "全部小类", "ALL", "全部年份", "city");
 
-        assertThat(stats.getRegions()).hasSize(1);
-        assertThat(stats.getRegions().get(0).getRecordCount()).isEqualTo(10L);
-        assertThat(stats.getRegions().get(0).getPndlMedianMgD1000inh()).isNull();
+        assertThat(stats.getRegions()).isEmpty();
+        verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
     }
 
     @Test
