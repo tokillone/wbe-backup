@@ -11,6 +11,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class Icd11SankeyServiceImplTest {
@@ -146,6 +148,34 @@ class Icd11SankeyServiceImplTest {
         assertThat(graph.getStats().getLevel2OnlyWeight()).isEqualByComparingTo("4");
         assertThat(graph.getStats().getLevel3Weight()).isEqualByComparingTo("0");
         assertThat(graph.getStats().getTopLevel3()).isEmpty();
+    }
+
+    @Test
+    void cachesReadModelsAndReloadsThemAfterSynchronizationInvalidation() {
+        Icd11SankeyMapper mapper = mock(Icd11SankeyMapper.class);
+        String category = "A 消化道和代谢系统药物";
+        when(mapper.findCategories()).thenReturn(List.of(category));
+        when(mapper.findPathsByCategory(category)).thenReturn(List.of(
+                pathRow(31L, category, "消化系统疾病", "胃或十二指肠溃疡",
+                        "西咪替丁", "西咪替丁", "Cimetidine", "2")
+        ));
+        Icd11SankeyServiceImpl service = new Icd11SankeyServiceImpl(mapper);
+
+        Icd11SankeyGraphResponse first = service.getGraph(category);
+        Icd11SankeyGraphResponse second = service.getGraph(category);
+
+        assertThat(second).isSameAs(first);
+        verify(mapper).findCategories();
+        verify(mapper).findPathsByCategory(category);
+        long previousRevision = service.cacheRevision();
+
+        service.invalidateCache();
+        Icd11SankeyGraphResponse reloaded = service.getGraph(category);
+
+        assertThat(reloaded).isNotSameAs(first);
+        assertThat(service.cacheRevision()).isGreaterThan(previousRevision);
+        verify(mapper, times(2)).findCategories();
+        verify(mapper, times(2)).findPathsByCategory(category);
     }
 
     private Icd11SankeyPathRow pathRow(Long id, String category, String level1, String level2,

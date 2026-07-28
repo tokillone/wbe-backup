@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS icd11_sankey_paths (
     target_category VARCHAR(160) NOT NULL COMMENT '目标类别',
     substance_category VARCHAR(180) NOT NULL COMMENT '目标物质类别',
     substance_subclass VARCHAR(180) NOT NULL COMMENT '目标物质子类',
+    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
     drug_name VARCHAR(300) NOT NULL COMMENT '药物名称',
     indication_original TEXT COMMENT '适应症原文',
     biomarker_name VARCHAR(300) NOT NULL COMMENT '生物标记物名称',

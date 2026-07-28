@@ -26,10 +26,8 @@ public interface Icd11SankeyMapper {
               substance_category,
               substance_subclass,
               drug_name,
-              indication_original,
               biomarker_name,
               biomarker_alias,
-              normalized_indication,
               disease_entity,
               icd11_level1_code,
               icd11_level1_name,
@@ -37,13 +35,8 @@ public interface Icd11SankeyMapper {
               icd11_level2_name,
               icd11_level3_code,
               icd11_level3_name,
-              mapping_level,
-              match_type,
-              review_status,
-              note,
               biomarker_cas,
-              literature_count,
-              data_row_count
+              literature_count
             FROM icd11_sankey_paths
             WHERE in_sankey = TRUE
             ORDER BY
@@ -64,10 +57,8 @@ public interface Icd11SankeyMapper {
               substance_category,
               substance_subclass,
               drug_name,
-              indication_original,
               biomarker_name,
               biomarker_alias,
-              normalized_indication,
               disease_entity,
               icd11_level1_code,
               icd11_level1_name,
@@ -75,13 +66,8 @@ public interface Icd11SankeyMapper {
               icd11_level2_name,
               icd11_level3_code,
               icd11_level3_name,
-              mapping_level,
-              match_type,
-              review_status,
-              note,
               biomarker_cas,
-              literature_count,
-              data_row_count
+              literature_count
             FROM icd11_sankey_paths
             WHERE target_category = #{category}
               AND in_sankey = TRUE

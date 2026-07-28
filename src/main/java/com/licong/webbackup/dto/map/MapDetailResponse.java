@@ -23,4 +23,5 @@ public class MapDetailResponse {
     private List<MapBreakdownItemResponse> categoryBreakdown;
     private List<MapSourceRecordResponse> sources;
     private List<MapSourceRecordResponse> sourceRecords;
+    private List<MapReportedSiteResponse> reportedSites;
 }

@@ -171,7 +171,7 @@ public class MapVisualizationSchemaInitializer {
                   AND COALESCE(coordinate_source, '') != 'canonical-boundary-centroid'
                 """);
         if (count != null && count > 0) {
-            ClassPathResource refreshScript = new ClassPathResource("db/map_pndl_stats_refresh.sql");
+            ClassPathResource refreshScript = new ClassPathResource("db/map_pndl_stats_refresh_v2.sql");
             if (refreshScript.exists()) {
                 ResourceDatabasePopulator refreshPopulator = new ResourceDatabasePopulator();
                 refreshPopulator.addScript(refreshScript);

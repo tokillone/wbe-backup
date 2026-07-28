@@ -78,7 +78,6 @@ public class DataUploadSchemaInitializer {
                 """);
         ensureBusinessUploadTraceSchema();
         ensureReportedSiteSchema();
-        backfillReportedSites();
     }
 
     private void ensureWorkbookUploadSchema() {
@@ -119,6 +118,7 @@ public class DataUploadSchemaInitializer {
                     target_group VARCHAR(20) NOT NULL,
                     substance_category VARCHAR(100) NOT NULL,
                     substance_subclass VARCHAR(100) NOT NULL,
+                    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
                     biomarker_name VARCHAR(300) NOT NULL,
                     source_sheet VARCHAR(64) NOT NULL DEFAULT '数据表',
                     source_row_number INT NOT NULL,
@@ -138,6 +138,7 @@ public class DataUploadSchemaInitializer {
                     target_category VARCHAR(160) NOT NULL,
                     substance_category VARCHAR(180) NOT NULL,
                     substance_subclass VARCHAR(180) NOT NULL,
+                    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
                     drug_name VARCHAR(300) NOT NULL,
                     indication_original TEXT,
                     biomarker_name VARCHAR(300) NOT NULL,
@@ -172,6 +173,10 @@ public class DataUploadSchemaInitializer {
                     INDEX idx_icd11_sankey_biomarker (target_category, biomarker_name)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ICD11疾病映射与可变层级桑基图路径源表'
                 """);
+        ensureTableColumn("home_target_records", "substance_fine",
+                "VARCHAR(180) NULL COMMENT '目标物质细类'");
+        ensureTableColumn("icd11_sankey_paths", "substance_fine",
+                "VARCHAR(180) NULL COMMENT '目标物质细类'");
         ensureTableColumn("icd11_sankey_paths", "in_sankey",
                 "BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否进入桑基图'");
         ensureTableColumn("icd11_sankey_paths", "exclusion_reason",
@@ -287,7 +292,10 @@ public class DataUploadSchemaInitializer {
         }
 
         if (tableExists("compounds")) {
+            ensureTableColumn("compounds", "substance_fine",
+                    "VARCHAR(180) NULL COMMENT '目标物质细类'");
             dropIndexIfExists("compounds", "uk_drug_name");
+            dropIndexIfExists("compounds", "idx_compound_upload_signature");
             ensureIndex("compounds", "idx_compound_upload_signature", """
                     CREATE INDEX idx_compound_upload_signature
                     ON compounds(
@@ -295,6 +303,7 @@ public class DataUploadSchemaInitializer {
                         target_category(60),
                         substance_category(60),
                         substance_subclass(60),
+                        substance_fine(60),
                         biomarker_name(80),
                         biomarker_cas(50)
                     )
@@ -376,6 +385,24 @@ public class DataUploadSchemaInitializer {
                         REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文献内报告的污水厂或采样点位'
                 """);
+        ensureTableColumn("reported_sites", "doi",
+                "VARCHAR(255) NULL COMMENT '点位关联表中的 DOI'");
+        ensureTableColumn("reported_sites", "canonical_plant_name",
+                "VARCHAR(500) NULL COMMENT '规范污水厂名称，仅用于展示和同文献精确关联'");
+        ensureTableColumn("reported_sites", "include_in_point_count",
+                "BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否计入地图点位覆盖数'");
+        ensureTableColumn("reported_sites", "site_note",
+                "TEXT NULL COMMENT '点位说明或排除原因'");
+        ensureTableColumn("reported_sites", "upload_id",
+                "BIGINT NULL COMMENT '来源上传批次'");
+        ensureTableColumn("reported_sites", "upload_row_id",
+                "BIGINT NULL COMMENT '来源上传行'");
+        ensureTableColumn("reported_sites", "excel_row_number",
+                "INT NULL COMMENT '点位关联表原始行号'");
+        ensureIndex("reported_sites", "idx_reported_sites_upload", """
+                CREATE INDEX idx_reported_sites_upload
+                ON reported_sites(upload_id, upload_row_id)
+                """);
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS reported_site_confirmation_audit (
                     audit_id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -395,6 +422,65 @@ public class DataUploadSchemaInitializer {
                     CONSTRAINT fk_site_confirmation_confirmed FOREIGN KEY (confirmed_site_id)
                         REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='跨文献真实点位人工确认审计'
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS approved_confirmed_site_ids (
+                    confirmed_site_id VARCHAR(80) PRIMARY KEY,
+                    approved_by BIGINT NULL,
+                    approved_at DATETIME NOT NULL,
+                    approval_note TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_approved_confirmed_site FOREIGN KEY (confirmed_site_id)
+                        REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='允许跨文献合并的人工批准白名单（当前功能关闭）'
+                """);
+        if (tableExists("measurements")) {
+            jdbcTemplate.execute("""
+                    CREATE TABLE IF NOT EXISTS record_site_bridge (
+                        bridge_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        upload_id BIGINT NULL,
+                        upload_row_id BIGINT NULL,
+                        excel_row_number INT NULL,
+                        internal_record_key VARCHAR(160) NOT NULL,
+                        measurement_id BIGINT NOT NULL,
+                        reported_site_key CHAR(64) NULL,
+                        effective_site_key VARCHAR(160) NULL,
+                        match_status VARCHAR(64) NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_record_site_bridge (measurement_id, reported_site_key),
+                        INDEX idx_record_site_bridge_effective (effective_site_key),
+                        INDEX idx_record_site_bridge_status (match_status),
+                        INDEX idx_record_site_bridge_upload (upload_id, upload_row_id),
+                        CONSTRAINT fk_record_site_bridge_measurement FOREIGN KEY (measurement_id)
+                            REFERENCES measurements(measurement_id) ON DELETE CASCADE,
+                        CONSTRAINT fk_record_site_bridge_reported FOREIGN KEY (reported_site_key)
+                            REFERENCES reported_sites(reported_site_key) ON DELETE RESTRICT
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据记录与点位关联表，可表达零、一或多个点位'
+                    """);
+        }
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS site_link_import_qc (
+                    qc_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    merge_confirmed_cross_document_sites BOOLEAN NOT NULL DEFAULT FALSE,
+                    site_rows INT NOT NULL DEFAULT 0,
+                    included_sites INT NOT NULL DEFAULT 0,
+                    excluded_sites INT NOT NULL DEFAULT 0,
+                    mapped_sites INT NOT NULL DEFAULT 0,
+                    unmapped_sites INT NOT NULL DEFAULT 0,
+                    record_rows INT NOT NULL DEFAULT 0,
+                    exact_records INT NOT NULL DEFAULT 0,
+                    multi_site_records INT NOT NULL DEFAULT 0,
+                    location_fallback_records INT NOT NULL DEFAULT 0,
+                    excluded_records INT NOT NULL DEFAULT 0,
+                    unmatched_country_records INT NOT NULL DEFAULT 0,
+                    unmatched_records INT NOT NULL DEFAULT 0,
+                    report_json LONGTEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_site_link_qc_upload (upload_id),
+                    CONSTRAINT fk_site_link_qc_upload FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='点位关联导入质量核查快照'
                 """);
         if (tableExists("sampling_events")) {
             ensureTableColumn("sampling_events", "reported_site_key",

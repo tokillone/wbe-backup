@@ -10,6 +10,7 @@ import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.dto.upload.RejectUploadRequest;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.service.DataUploadService;
+import com.licong.webbackup.service.Icd11SankeyService;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -36,10 +37,14 @@ public class DataUploadController {
 
     private final SecuritySupport securitySupport;
     private final DataUploadService dataUploadService;
+    private final Icd11SankeyService icd11SankeyService;
 
-    public DataUploadController(SecuritySupport securitySupport, DataUploadService dataUploadService) {
+    public DataUploadController(SecuritySupport securitySupport,
+                                DataUploadService dataUploadService,
+                                Icd11SankeyService icd11SankeyService) {
         this.securitySupport = securitySupport;
         this.dataUploadService = dataUploadService;
+        this.icd11SankeyService = icd11SankeyService;
     }
 
     @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -64,7 +69,9 @@ public class DataUploadController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable Long uploadId) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success("同步完成", dataUploadService.sync(uploadId, user));
+        DataUploadSyncResponse response = dataUploadService.sync(uploadId, user);
+        icd11SankeyService.invalidateCache();
+        return ApiResponse.success("同步完成", response);
     }
 
     @PostMapping("/{uploadId}/reject")

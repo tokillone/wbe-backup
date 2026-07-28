@@ -1,0 +1,116 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  forward-headers-strategy: native
+  compression:
+    enabled: true
+    min-response-size: 1KB
+    mime-types: application/json
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:80}
+      min-spare: ${TOMCAT_MIN_SPARE_THREADS:10}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:2048}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    connection-timeout: ${TOMCAT_CONNECTION_TIMEOUT:20s}
+    keep-alive-timeout: ${TOMCAT_KEEP_ALIVE_TIMEOUT:20s}
+    remoteip:
+      remote-ip-header: X-Forwarded-For
+      protocol-header: X-Forwarded-Proto
+      host-header: X-Forwarded-Host
+      port-header: X-Forwarded-Port
+      internal-proxies: ${TRUSTED_PROXY_IP_REGEX}
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    type: com.zaxxer.hikari.HikariDataSource
+    hikari:
+      pool-name: WbeHikariPool
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
+      validation-timeout: ${DB_VALIDATION_TIMEOUT_MS:5000}
+      idle-timeout: ${DB_IDLE_TIMEOUT_MS:600000}
+      max-lifetime: ${DB_MAX_LIFETIME_MS:1800000}
+      keepalive-time: ${DB_KEEPALIVE_TIME_MS:300000}
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+      timeout: ${REDIS_TIMEOUT:2s}
+      ssl:
+        enabled: ${REDIS_SSL_ENABLED:false}
+  servlet:
+    multipart:
+      max-file-size: ${UPLOAD_MAX_FILE_SIZE:50MB}
+      max-request-size: ${UPLOAD_MAX_REQUEST_SIZE:60MB}
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    default-statement-timeout: ${DB_QUERY_TIMEOUT_SECONDS:30}
+
+wbe:
+  storage:
+    upload-dir: ${WBE_UPLOAD_DIR}
+    max-file-size: ${UPLOAD_MAX_FILE_SIZE:50MB}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+mail:
+  host: ${MAIL_HOST}
+  port: ${MAIL_PORT}
+  username: ${MAIL_USERNAME}
+  password: ${MAIL_PASSWORD}
+  default-encoding: UTF-8
+  properties:
+    mail:
+      debug: false
+      smtp:
+        auth: ${MAIL_SMTP_AUTH:true}
+        starttls:
+          enable: ${MAIL_STARTTLS_ENABLED:true}
+          required: ${MAIL_STARTTLS_REQUIRED:true}
+        ssl:
+          enable: ${MAIL_SSL_ENABLED:false}
+          required: ${MAIL_SSL_REQUIRED:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      show-components: never
+  info:
+    env:
+      enabled: false
+
+info:
+  app:
+    name: wbe-backup
+    description: Wastewater-based epidemiology backend
+
+logging:
+  file:
+    name: ${LOG_FILE:/var/log/wbe-backup/wbe-backup.log}
+  level:
+    root: ${ROOT_LOG_LEVEL:INFO}
+    com.licong.webbackup: ${APP_LOG_LEVEL:INFO}
+  logback:
+    rollingpolicy:
+      max-file-size: ${LOG_MAX_FILE_SIZE:50MB}
+      max-history: ${LOG_MAX_HISTORY:14}
+      total-size-cap: ${LOG_TOTAL_SIZE_CAP:1GB}

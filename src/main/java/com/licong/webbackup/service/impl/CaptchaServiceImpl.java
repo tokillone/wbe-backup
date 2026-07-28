@@ -3,6 +3,8 @@ package com.licong.webbackup.service.impl;
 import com.licong.webbackup.dto.CaptchaResponse;
 import com.licong.webbackup.exception.BusinessException;
 import com.licong.webbackup.service.CaptchaService;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
@@ -16,28 +18,40 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.SecureRandom;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.Base64;
-import java.util.Map;
+import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class CaptchaServiceImpl implements CaptchaService {
 
     private static final Duration CAPTCHA_TTL = Duration.ofMinutes(5);
+    private static final String CAPTCHA_KEY_PREFIX = "wbe:auth:captcha:";
     private static final int IMAGE_WIDTH = 120;
     private static final int IMAGE_HEIGHT = 42;
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final DefaultRedisScript<String> CONSUME_CAPTCHA_SCRIPT = new DefaultRedisScript<>("""
+            local value = redis.call('GET', KEYS[1])
+            if value then
+                redis.call('DEL', KEYS[1])
+            end
+            return value
+            """, String.class);
 
-    private final Map<String, CaptchaEntry> captchas = new ConcurrentHashMap<>();
+    private final StringRedisTemplate redisTemplate;
+    private final RedisOperationExecutor redis;
+
+    public CaptchaServiceImpl(StringRedisTemplate redisTemplate, RedisOperationExecutor redis) {
+        this.redisTemplate = redisTemplate;
+        this.redis = redis;
+    }
 
     @Override
     public CaptchaResponse createCaptcha() {
-        clearExpiredCaptchas();
         String captchaId = UUID.randomUUID().toString().replace("-", "");
         String code = String.format("%04d", RANDOM.nextInt(10_000));
-        captchas.put(captchaId, new CaptchaEntry(code, LocalDateTime.now().plus(CAPTCHA_TTL)));
+        redis.execute("保存图形验证码", () ->
+                redisTemplate.opsForValue().set(captchaKey(captchaId), code, CAPTCHA_TTL));
 
         return CaptchaResponse.builder()
                 .captchaId(captchaId)
@@ -52,11 +66,12 @@ public class CaptchaServiceImpl implements CaptchaService {
             throw new BusinessException(428, "需要图形验证码，请完成验证后重试");
         }
 
-        CaptchaEntry entry = captchas.remove(captchaId.trim());
-        if (entry == null || entry.expiresAt().isBefore(LocalDateTime.now())) {
+        String storedCode = redis.execute("消费图形验证码", () ->
+                redisTemplate.execute(CONSUME_CAPTCHA_SCRIPT, List.of(captchaKey(captchaId.trim()))));
+        if (storedCode == null) {
             throw new BusinessException(428, "图形验证码已过期，请刷新后重试");
         }
-        if (!entry.code().equals(captchaCode.trim())) {
+        if (!storedCode.equals(captchaCode.trim())) {
             throw new BusinessException(428, "图形验证码不正确，请刷新后重试");
         }
     }
@@ -104,11 +119,7 @@ public class CaptchaServiceImpl implements CaptchaService {
         }
     }
 
-    private void clearExpiredCaptchas() {
-        LocalDateTime now = LocalDateTime.now();
-        captchas.entrySet().removeIf(entry -> entry.getValue().expiresAt().isBefore(now));
-    }
-
-    private record CaptchaEntry(String code, LocalDateTime expiresAt) {
+    private String captchaKey(String captchaId) {
+        return CAPTCHA_KEY_PREFIX + captchaId;
     }
 }

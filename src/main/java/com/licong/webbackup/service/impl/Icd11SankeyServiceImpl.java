@@ -31,6 +31,8 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
     private static final String ALL_CATEGORY_LABEL = "全部目标类别";
     private static final int TOP_LIMIT = 8;
     private static final int SHARE_SCALE = 8;
+    private static final int MAX_GRAPH_CACHE_ENTRIES = 32;
+    private static final long CACHE_TTL_NANOS = java.time.Duration.ofMinutes(10).toNanos();
     private static final List<String> LEVEL1_COLORS = List.of(
             "#5B8FD1",
             "#7FC8C2",
@@ -47,6 +49,11 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
     );
 
     private final Icd11SankeyMapper icd11SankeyMapper;
+    private final Object cacheMonitor = new Object();
+    private final LinkedHashMap<String, CacheEntry<Icd11SankeyGraphResponse>> graphCache =
+            new LinkedHashMap<>(16, 0.75f, true);
+    private CacheEntry<Icd11SankeyCategoryResponse> categoryCache;
+    private long cacheRevision = System.currentTimeMillis();
 
     public Icd11SankeyServiceImpl(Icd11SankeyMapper icd11SankeyMapper) {
         this.icd11SankeyMapper = icd11SankeyMapper;
@@ -54,23 +61,76 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
 
     @Override
     public Icd11SankeyCategoryResponse getCategories() {
-        List<String> categories = icd11SankeyMapper.findCategories();
-        return Icd11SankeyCategoryResponse.builder()
-                .categories(categories)
+        long now = System.nanoTime();
+        synchronized (cacheMonitor) {
+            if (categoryCache != null && categoryCache.isFresh(now)) {
+                return categoryCache.value();
+            }
+        }
+
+        Icd11SankeyCategoryResponse loaded = Icd11SankeyCategoryResponse.builder()
+                .categories(List.copyOf(icd11SankeyMapper.findCategories()))
                 .defaultCategory(ALL_CATEGORY)
                 .build();
+        synchronized (cacheMonitor) {
+            if (categoryCache != null && categoryCache.isFresh(System.nanoTime())) {
+                return categoryCache.value();
+            }
+            categoryCache = new CacheEntry<>(loaded, System.nanoTime() + CACHE_TTL_NANOS);
+            return loaded;
+        }
     }
 
     @Override
     public Icd11SankeyGraphResponse getGraph(String category) {
-        if (!StringUtils.hasText(category) || ALL_CATEGORY.equalsIgnoreCase(category.trim())) {
-            return buildGraph(ALL_CATEGORY_LABEL, icd11SankeyMapper.findAllPaths());
-        }
         String normalizedCategory = normalizeCategory(category);
-        List<Icd11SankeyPathRow> rows = StringUtils.hasText(normalizedCategory)
-                ? icd11SankeyMapper.findPathsByCategory(normalizedCategory)
-                : List.of();
-        return buildGraph(normalizedCategory, rows);
+        String cacheKey = StringUtils.hasText(normalizedCategory) ? normalizedCategory : ALL_CATEGORY;
+        long now = System.nanoTime();
+        synchronized (cacheMonitor) {
+            CacheEntry<Icd11SankeyGraphResponse> cached = graphCache.get(cacheKey);
+            if (cached != null && cached.isFresh(now)) {
+                return cached.value();
+            }
+            graphCache.remove(cacheKey);
+        }
+
+        Icd11SankeyGraphResponse loaded;
+        if (ALL_CATEGORY.equals(cacheKey)) {
+            loaded = buildGraph(ALL_CATEGORY_LABEL, icd11SankeyMapper.findAllPaths());
+        } else {
+            List<Icd11SankeyPathRow> rows = StringUtils.hasText(normalizedCategory)
+                    ? icd11SankeyMapper.findPathsByCategory(normalizedCategory)
+                    : List.of();
+            loaded = buildGraph(normalizedCategory, rows);
+        }
+
+        synchronized (cacheMonitor) {
+            CacheEntry<Icd11SankeyGraphResponse> cached = graphCache.get(cacheKey);
+            if (cached != null && cached.isFresh(System.nanoTime())) {
+                return cached.value();
+            }
+            graphCache.put(cacheKey, new CacheEntry<>(loaded, System.nanoTime() + CACHE_TTL_NANOS));
+            while (graphCache.size() > MAX_GRAPH_CACHE_ENTRIES) {
+                graphCache.remove(graphCache.keySet().iterator().next());
+            }
+            return loaded;
+        }
+    }
+
+    @Override
+    public void invalidateCache() {
+        synchronized (cacheMonitor) {
+            categoryCache = null;
+            graphCache.clear();
+            cacheRevision = Math.max(cacheRevision + 1, System.currentTimeMillis());
+        }
+    }
+
+    @Override
+    public long cacheRevision() {
+        synchronized (cacheMonitor) {
+            return cacheRevision;
+        }
     }
 
     private Icd11SankeyGraphResponse buildGraph(String category, List<Icd11SankeyPathRow> rows) {
@@ -301,12 +361,12 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
     }
 
     private String normalizeCategory(String category) {
-        List<String> categories = icd11SankeyMapper.findCategories();
+        if (!StringUtils.hasText(category) || ALL_CATEGORY.equalsIgnoreCase(category.trim())) {
+            return ALL_CATEGORY;
+        }
+        List<String> categories = getCategories().getCategories();
         if (categories.isEmpty()) {
             return "";
-        }
-        if (!StringUtils.hasText(category)) {
-            return categories.get(0);
         }
         String trimmed = category.trim();
         return categories.contains(trimmed) ? trimmed : categories.get(0);
@@ -477,6 +537,12 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
             if (StringUtils.hasText(value)) {
                 values.add(value.trim());
             }
+        }
+    }
+
+    private record CacheEntry<T>(T value, long expiresAtNanos) {
+        private boolean isFresh(long nowNanos) {
+            return nowNanos < expiresAtNanos;
         }
     }
 }
