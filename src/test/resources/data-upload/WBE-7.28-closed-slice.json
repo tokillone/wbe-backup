@@ -1,0 +1,14 @@
+{
+  "source": "WBE汇总表7.28.xlsx",
+  "output": "wbe-backup/src/test/resources/data-upload/WBE-7.28-closed-slice.xlsx",
+  "selectedLiteratureCode": "WBE0107",
+  "selectedDoi": "10.1016/j.jchromb.2016.04.033",
+  "sheets": {
+    "数据表": 1,
+    "核心标记物优先级识别": 1,
+    "药物疾病ICD11映射": 1,
+    "文献基础信息": 1,
+    "点位关联表": 1,
+    "采样方法统一审计": 1
+  }
+}

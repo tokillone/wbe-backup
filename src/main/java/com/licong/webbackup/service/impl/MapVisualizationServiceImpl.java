@@ -557,6 +557,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 }
             }
             case "admin1" -> {
+                if (isUnassignedRegion(region.getGeoKey())) {
+                    addComparison(comparisons, "country", "国家横向比较", "country",
+                            null, null, "country|" + countryKey, true,
+                            "未定位省州数据采用所属国家的国家层面 PNDL 横向比较", selection);
+                    break;
+                }
                 addComparison(comparisons, "admin1", inChina ? "中国省份横向比较" : "同国省/州比较",
                         "admin1", countryKey, null, currentRegionId, true,
                         "同一国家省/州层面 PNDL 横向比较", selection);
@@ -570,6 +576,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 }
             }
             case "city" -> {
+                if (isUnassignedRegion(region.getGeoKey())) {
+                    addComparison(comparisons, "admin1", "所属省/州比较", "admin1",
+                            countryKey, null, "admin1|" + parentKey, true,
+                            "未定位城市数据采用所属省/州层面 PNDL 横向比较", selection);
+                    break;
+                }
                 addComparison(comparisons, "city", inChina ? "中国城市横向比较" : "城市横向比较",
                         "city", inChina ? countryKey : null, null, currentRegionId, true,
                         "城市层面 PNDL 横向比较", selection);
@@ -586,6 +598,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             }
         }
         return comparisons;
+    }
+
+    private boolean isUnassignedRegion(String geoKey) {
+        return StringUtils.hasText(geoKey) && geoKey.endsWith("|__unassigned__");
     }
 
     private void addComparison(List<MapPndlComparisonResponse> comparisons,
@@ -898,9 +914,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         if (region == null || region.getLevel() == null) {
             return "位置未识别";
         }
+        boolean unassigned = isUnassignedRegion(region.getGeoKey());
         return switch (region.getLevel()) {
-            case "city" -> "城市级位置";
-            case "admin1" -> "省州级位置";
+            case "city" -> unassigned ? "未定位到城市" : "城市级位置";
+            case "admin1" -> unassigned ? "未定位到省州" : "省州级位置";
             default -> "国家级位置";
         };
     }

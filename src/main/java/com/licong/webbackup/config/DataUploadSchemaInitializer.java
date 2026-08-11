@@ -70,6 +70,7 @@ public class DataUploadSchemaInitializer {
                         REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传原始行与校验结果表'
                 """);
+        ensureReviewWorkflowSchema();
         ensureWorkbookUploadSchema();
         jdbcTemplate.update("""
                 UPDATE data_upload_batches
@@ -230,6 +231,84 @@ public class DataUploadSchemaInitializer {
         ensureDataUploadBatchColumn("review_action", "VARCHAR(32) NULL COMMENT '审核动作'");
         ensureDataUploadBatchColumn("review_note", "VARCHAR(500) NULL COMMENT '审核备注'");
         ensureDataUploadBatchColumn("synced_by", "BIGINT NULL COMMENT '同步人'");
+    }
+
+    private void ensureReviewWorkflowSchema() {
+        ensureDataUploadBatchColumn("source_reviewed_by", "BIGINT NULL COMMENT '原始提交初审人'");
+        ensureDataUploadBatchColumn("source_reviewed_at", "DATETIME NULL COMMENT '原始提交初审时间'");
+        ensureDataUploadBatchColumn("source_review_note", "VARCHAR(500) NULL COMMENT '原始提交初审备注'");
+        ensureDataUploadBatchColumn("current_package_id", "BIGINT NULL COMMENT '当前完整整理包'");
+        ensureDataUploadBatchColumn("approved_package_id", "BIGINT NULL COMMENT '终审通过的完整整理包'");
+        ensureDataUploadBatchColumn("review_checklist_json", "LONGTEXT NULL COMMENT '终审检查项快照'");
+        ensureDataUploadBatchColumn("review_diff_json", "LONGTEXT NULL COMMENT '终审时生产差异摘要'");
+        ensureDataUploadBatchColumn("sync_error_message", "VARCHAR(500) NULL COMMENT '最近一次同步失败原因'");
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_review_packages (
+                    package_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    version_no INT NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    stored_file_path VARCHAR(500) NULL,
+                    sha256 VARCHAR(64) NOT NULL,
+                    uploaded_by BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    total_rows INT NOT NULL DEFAULT 0,
+                    valid_rows INT NOT NULL DEFAULT 0,
+                    error_rows INT NOT NULL DEFAULT 0,
+                    warning_rows INT NOT NULL DEFAULT 0,
+                    validation_message LONGTEXT NULL,
+                    diff_json LONGTEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_review_package_version (upload_id, version_no),
+                    INDEX idx_review_package_batch (upload_id, created_at),
+                    INDEX idx_review_package_sha (sha256),
+                    INDEX idx_review_package_uploader (uploaded_by),
+                    CONSTRAINT fk_review_package_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_review_package_user FOREIGN KEY (uploaded_by)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='上传批次完整整理包版本'
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_audit_events (
+                    event_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    package_id BIGINT NULL,
+                    action VARCHAR(48) NOT NULL,
+                    actor_id BIGINT NOT NULL,
+                    from_status VARCHAR(32) NULL,
+                    to_status VARCHAR(32) NULL,
+                    note VARCHAR(500) NULL,
+                    detail_json LONGTEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_upload_audit_batch (upload_id, created_at),
+                    INDEX idx_upload_audit_package (package_id),
+                    INDEX idx_upload_audit_actor (actor_id),
+                    CONSTRAINT fk_upload_audit_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_upload_audit_package FOREIGN KEY (package_id)
+                        REFERENCES data_upload_review_packages(package_id) ON DELETE SET NULL,
+                    CONSTRAINT fk_upload_audit_actor FOREIGN KEY (actor_id)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传工作流审计事件'
+                """);
+
+        ensureTableColumn("data_upload_rows", "row_stage",
+                "VARCHAR(24) NOT NULL DEFAULT 'SUBMISSION' COMMENT '提交数据或整理包数据'");
+        ensureTableColumn("data_upload_rows", "review_package_id",
+                "BIGINT NULL COMMENT '完整整理包版本'");
+        ensureTableColumn("data_upload_rows", "row_fingerprint",
+                "VARCHAR(64) NULL COMMENT '稳定行指纹'");
+        ensureIndex("data_upload_rows", "idx_data_upload_rows_stage", """
+                CREATE INDEX idx_data_upload_rows_stage
+                ON data_upload_rows(upload_id, row_stage, review_package_id, sheet_name, excel_row_number)
+                """);
+        ensureIndex("data_upload_rows", "idx_data_upload_rows_fingerprint", """
+                CREATE INDEX idx_data_upload_rows_fingerprint
+                ON data_upload_rows(upload_id, row_stage, row_fingerprint)
+                """);
     }
 
     private void ensureDataUploadBatchColumn(String columnName, String columnDefinition) {

@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -414,6 +415,77 @@ class MapVisualizationServiceImplTest {
                     .extracting(point -> point.getYear())
                     .containsExactly(2022, 2023);
         });
+    }
+
+    @Test
+    void unassignedAdmin1DetailUsesOnlyItsParentCountryComparison() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse unassigned = stat(
+                "admin1", "unitedsofamerica|__unassigned__", "UNASSIGNED_ADMIN1",
+                "健康状态类", "内源性激素", "CORTISOL", "114", 13);
+        unassigned.setParentGeoKey("unitedsofamerica");
+        unassigned.setCountry("United States of America");
+        MapRegionStatResponse country = stat(
+                "country", "unitedsofamerica", "United States of America",
+                "健康状态类", "内源性激素", "CORTISOL", "120", 20);
+
+        when(mapper.findRegion(
+                eq("admin1"), eq("unitedsofamerica|__unassigned__"),
+                eq("健康状态类"), eq("健康状态类"), eq("内源性激素"),
+                eq("CORTISOL"), eq("全部年份")))
+                .thenReturn(unassigned);
+        when(mapper.findComparisonStatsByScope(
+                eq("country"), any(), any(), eq("健康状态类"), eq("健康状态类"),
+                eq("内源性激素"), eq("CORTISOL"), eq("全部年份"), anyInt()))
+                .thenReturn(List.of(country));
+
+        MapDetailResponse detail = new MapVisualizationServiceImpl(mapper).getDetail(
+                "admin1", "unitedsofamerica|__unassigned__", "健康状态类", "健康状态类",
+                "内源性激素", "CORTISOL", "全部年份");
+
+        assertThat(detail.getPndlComparisons()).singleElement().satisfies(comparison -> {
+            assertThat(comparison.getKey()).isEqualTo("country");
+            assertThat(comparison.getScopeLevel()).isEqualTo("country");
+            assertThat(comparison.getSelectedRegionId()).isEqualTo("country|unitedsofamerica");
+        });
+        verify(mapper, never()).findComparisonStatsByScope(
+                eq("admin1"), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void unassignedCityDetailUsesOnlyItsParentAdminComparison() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse unassigned = stat(
+                "city", "china|qinghai|__unassigned__", "UNASSIGNED_CITY",
+                "N02 镇痛药", "N02A", "76573", "6", 6);
+        unassigned.setParentGeoKey("china|qinghai");
+        unassigned.setCountry("China");
+        unassigned.setProvince("青海省");
+        MapRegionStatResponse qinghai = stat(
+                "admin1", "china|qinghai", "青海省",
+                "N02 镇痛药", "N02A", "76573", "17", 17);
+
+        when(mapper.findRegion(
+                eq("city"), eq("china|qinghai|__unassigned__"),
+                eq("N 神经系统药物"), eq("N 神经系统药物"), eq("N02 镇痛药"),
+                eq("N02A"), eq("76573")))
+                .thenReturn(unassigned);
+        when(mapper.findComparisonStatsByScope(
+                eq("admin1"), eq("china"), isNull(), eq("N 神经系统药物"),
+                eq("N 神经系统药物"), eq("N02 镇痛药"), eq("N02A"), eq("76573"), anyInt()))
+                .thenReturn(List.of(qinghai));
+
+        MapDetailResponse detail = new MapVisualizationServiceImpl(mapper).getDetail(
+                "city", "china|qinghai|__unassigned__", "N 神经系统药物",
+                "N 神经系统药物", "N02 镇痛药", "N02A", "76573");
+
+        assertThat(detail.getPndlComparisons()).singleElement().satisfies(comparison -> {
+            assertThat(comparison.getKey()).isEqualTo("admin1");
+            assertThat(comparison.getScopeLevel()).isEqualTo("admin1");
+            assertThat(comparison.getSelectedRegionId()).isEqualTo("admin1|china|qinghai");
+        });
+        verify(mapper, never()).findComparisonStatsByScope(
+                eq("city"), any(), any(), any(), any(), any(), any(), any(), anyInt());
     }
 
     private MapFilterRow filterRow(String category) {

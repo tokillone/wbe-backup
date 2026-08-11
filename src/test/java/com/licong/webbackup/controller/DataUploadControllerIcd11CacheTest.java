@@ -50,6 +50,7 @@ class DataUploadControllerIcd11CacheTest {
         assertThatThrownBy(() -> controller.sync("token", 8L))
                 .isInstanceOf(IllegalStateException.class);
 
+        verify(dataUploadService).recordSyncFailure(8L, user, "sync failed");
         verify(sankeyService, never()).invalidateCache();
     }
 }

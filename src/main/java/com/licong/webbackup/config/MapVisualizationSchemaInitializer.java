@@ -13,6 +13,8 @@ import javax.sql.DataSource;
 @DependsOn("dataUploadSchemaInitializer")
 public class MapVisualizationSchemaInitializer {
 
+    private static final int ADMIN1_SEED_VERSION = 20260810;
+
     private final JdbcTemplate jdbcTemplate;
     private final DataSource dataSource;
 
@@ -26,6 +28,7 @@ public class MapVisualizationSchemaInitializer {
         ensureTables();
         ensureIndex("geo_locations", "idx_geo_parent", "CREATE INDEX idx_geo_parent ON geo_locations (level, parent_geo_key)");
         ensureIndex("geo_locations", "idx_geo_names", "CREATE INDEX idx_geo_names ON geo_locations (country, province, city)");
+        ensureIndex("geo_location_aliases", "idx_geo_alias_target", "CREATE INDEX idx_geo_alias_target ON geo_location_aliases (level, geo_key)");
         ensureColumn("map_pndl_stats", "pndl_median_mg_d_1000inh", "DECIMAL(28,10)");
         ensureColumn("map_pndl_stats", "biomarker_count", "BIGINT NOT NULL DEFAULT 0");
         ensureColumn("map_pndl_stats", "pndl_record_count", "BIGINT NOT NULL DEFAULT 0");
@@ -39,7 +42,7 @@ public class MapVisualizationSchemaInitializer {
         ensureIndex("map_pndl_stats", "idx_map_median", "CREATE INDEX idx_map_median ON map_pndl_stats (pndl_median_mg_d_1000inh)");
         ensureIndex("wastewater_plants", "idx_wastewater_plants_geo", "CREATE INDEX idx_wastewater_plants_geo ON wastewater_plants (country, province, city)");
         ensureIndex("compounds", "idx_compounds_map_filter", "CREATE INDEX idx_compounds_map_filter ON compounds (substance_category, substance_subclass, biomarker_cas)");
-        seedGeoLocationsIfEmpty();
+        seedGeoLocations();
     }
 
     private void ensureTables() {
@@ -61,6 +64,20 @@ public class MapVisualizationSchemaInitializer {
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     UNIQUE KEY uk_geo_level_key (level, geo_key)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化地理维表'
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS geo_location_aliases (
+                    alias_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    level VARCHAR(16) NOT NULL,
+                    country_key VARCHAR(180) NOT NULL,
+                    alias_key VARCHAR(180) NOT NULL,
+                    geo_key VARCHAR(180) NOT NULL,
+                    source VARCHAR(80) NOT NULL,
+                    source_version INT NOT NULL DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_geo_alias (level, country_key, alias_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地理维表别名映射'
                 """);
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS map_pndl_stats (
@@ -148,35 +165,62 @@ public class MapVisualizationSchemaInitializer {
         jdbcTemplate.execute(createSql);
     }
 
-    private void seedGeoLocationsIfEmpty() {
+    private void seedGeoLocations() {
         Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM geo_locations", Long.class);
         Long canonicalChinaCityCount = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM geo_locations
                 WHERE level = 'city' AND geo_key = 'china|guangdong|guangzhou'
                 """, Long.class);
-        if (count != null && count > 0 && canonicalChinaCityCount != null && canonicalChinaCityCount > 0) {
+        Long admin1SeedVersion = jdbcTemplate.queryForObject("""
+                SELECT COALESCE(MAX(source_version), 0)
+                FROM geo_location_aliases
+                WHERE level = 'admin1' AND source = 'world-admin1-boundary'
+                """, Long.class);
+        Long unitedStatesSentinelCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM geo_locations
+                WHERE level = 'admin1'
+                  AND geo_key IN (
+                    'unitedsofamerica|california',
+                    'unitedsofamerica|kentucky',
+                    'unitedsofamerica|nevada',
+                    'unitedsofamerica|newyork',
+                    'unitedsofamerica|pennsylvania'
+                  )
+                """, Long.class);
+        boolean needsBaseSeed = count == null || count == 0
+                || canonicalChinaCityCount == null || canonicalChinaCityCount == 0;
+        boolean needsAdmin1Seed = admin1SeedVersion == null
+                || admin1SeedVersion < ADMIN1_SEED_VERSION
+                || unitedStatesSentinelCount == null
+                || unitedStatesSentinelCount < 5;
+        if (!needsBaseSeed && !needsAdmin1Seed) {
             return;
         }
-        ClassPathResource script = new ClassPathResource("db/map_geolocation_seed.sql");
+        if (needsBaseSeed) {
+            runScript("db/map_geolocation_seed.sql");
+            jdbcTemplate.update("""
+                    DELETE FROM geo_locations
+                    WHERE level IN ('admin1', 'city')
+                      AND geo_key LIKE 'china|%'
+                      AND COALESCE(coordinate_source, '') != 'canonical-boundary-centroid'
+                    """);
+        }
+        if (needsAdmin1Seed) {
+            runScript("db/map_admin1_geolocation_seed.sql");
+        }
+        if (count != null && count > 0) {
+            runScript("db/map_pndl_stats_refresh_v2.sql");
+        }
+    }
+
+    private void runScript(String path) {
+        ClassPathResource script = new ClassPathResource(path);
         if (!script.exists()) {
             return;
         }
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator();
         populator.addScript(script);
         populator.execute(dataSource);
-        jdbcTemplate.update("""
-                DELETE FROM geo_locations
-                WHERE level IN ('admin1', 'city')
-                  AND geo_key LIKE 'china|%'
-                  AND COALESCE(coordinate_source, '') != 'canonical-boundary-centroid'
-                """);
-        if (count != null && count > 0) {
-            ClassPathResource refreshScript = new ClassPathResource("db/map_pndl_stats_refresh_v2.sql");
-            if (refreshScript.exists()) {
-                ResourceDatabasePopulator refreshPopulator = new ResourceDatabasePopulator();
-                refreshPopulator.addScript(refreshScript);
-                refreshPopulator.execute(dataSource);
-            }
-        }
     }
 }

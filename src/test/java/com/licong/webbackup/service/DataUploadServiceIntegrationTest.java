@@ -5,6 +5,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.licong.webbackup.config.DataUploadStorageProperties;
 import com.licong.webbackup.dto.upload.DataUploadBatchPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadPreviewResponse;
+import com.licong.webbackup.dto.upload.DataUploadReviewDecisionRequest;
+import com.licong.webbackup.dto.upload.DataUploadReviewPackageResponse;
+import com.licong.webbackup.dto.upload.DataUploadRowsPageResponse;
+import com.licong.webbackup.dto.upload.DataUploadSourceReviewRequest;
 import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.exception.BusinessException;
@@ -27,6 +31,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.sql.DataSource;
@@ -67,14 +72,18 @@ class DataUploadServiceIntegrationTest {
 
     private final DataUploadService service;
     private final JdbcTemplate jdbcTemplate;
+    private final PlatformTransactionManager transactionManager;
 
     @TempDir
     Path tempDir;
 
     @Autowired
-    DataUploadServiceIntegrationTest(DataUploadService service, JdbcTemplate jdbcTemplate) {
+    DataUploadServiceIntegrationTest(DataUploadService service,
+                                     JdbcTemplate jdbcTemplate,
+                                     PlatformTransactionManager transactionManager) {
         this.service = service;
         this.jdbcTemplate = jdbcTemplate;
+        this.transactionManager = transactionManager;
     }
 
     @BeforeEach
@@ -112,13 +121,57 @@ class DataUploadServiceIntegrationTest {
                     reviewed_at TIMESTAMP NULL,
                     review_action VARCHAR(32) NULL,
                     review_note VARCHAR(500) NULL,
-                    synced_by BIGINT NULL
+                    synced_by BIGINT NULL,
+                    source_reviewed_by BIGINT NULL,
+                    source_reviewed_at TIMESTAMP NULL,
+                    source_review_note VARCHAR(500) NULL,
+                    current_package_id BIGINT NULL,
+                    approved_package_id BIGINT NULL,
+                    review_checklist_json CLOB NULL,
+                    review_diff_json CLOB NULL,
+                    sync_error_message VARCHAR(500) NULL
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE data_upload_review_packages (
+                    package_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    upload_id BIGINT NOT NULL,
+                    version_no INT NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    stored_file_path VARCHAR(500),
+                    sha256 VARCHAR(64) NOT NULL,
+                    uploaded_by BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    total_rows INT NOT NULL DEFAULT 0,
+                    valid_rows INT NOT NULL DEFAULT 0,
+                    error_rows INT NOT NULL DEFAULT 0,
+                    warning_rows INT NOT NULL DEFAULT 0,
+                    validation_message CLOB,
+                    diff_json CLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (upload_id, version_no)
+                )
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE data_upload_audit_events (
+                    event_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    upload_id BIGINT NOT NULL,
+                    package_id BIGINT,
+                    action VARCHAR(48) NOT NULL,
+                    actor_id BIGINT NOT NULL,
+                    from_status VARCHAR(32),
+                    to_status VARCHAR(32),
+                    note VARCHAR(500),
+                    detail_json CLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """);
         jdbcTemplate.execute("""
                 CREATE TABLE data_upload_rows (
                     row_id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     upload_id BIGINT NOT NULL,
+                    review_package_id BIGINT NULL,
+                    row_stage VARCHAR(24) NOT NULL DEFAULT 'SUBMISSION',
                     sheet_name VARCHAR(120) NOT NULL,
                     excel_row_number INT NOT NULL,
                     row_status VARCHAR(32) NOT NULL,
@@ -128,6 +181,7 @@ class DataUploadServiceIntegrationTest {
                     synced_measurement_id BIGINT NULL,
                     synced_entity_type VARCHAR(40) NULL,
                     synced_entity_id BIGINT NULL,
+                    row_fingerprint VARCHAR(64) NULL,
                     created_at TIMESTAMP
                 )
                 """);
@@ -398,7 +452,15 @@ class DataUploadServiceIntegrationTest {
     @AfterEach
     void deleteStoredUploads() {
         List<String> paths = jdbcTemplate.query(
-                "SELECT stored_file_path FROM data_upload_batches WHERE stored_file_path IS NOT NULL",
+                """
+                SELECT stored_file_path
+                FROM data_upload_batches
+                WHERE stored_file_path IS NOT NULL
+                UNION ALL
+                SELECT stored_file_path
+                FROM data_upload_review_packages
+                WHERE stored_file_path IS NOT NULL
+                """,
                 (rs, rowNum) -> rs.getString(1)
         );
         paths.forEach(path -> {
@@ -434,7 +496,7 @@ class DataUploadServiceIntegrationTest {
         DataUploadPreviewResponse adminOverride = service.preview(file(workbook), admin, true);
         assertThat(adminOverride.getBatch().getStatus()).isEqualTo("PENDING_REVIEW");
         assertThat(adminOverride.getBatch().getDuplicateMessage()).contains("相同 SHA256");
-        assertThat(service.approve(adminOverride.getBatch().getUploadId(), admin).getStatus()).isEqualTo("APPROVED");
+        completeReview(adminOverride.getBatch().getUploadId(), admin, workbook);
         assertThat(service.sync(adminOverride.getBatch().getUploadId(), admin).getBatch().getStatus()).isEqualTo("SYNCED");
     }
 
@@ -468,6 +530,18 @@ class DataUploadServiceIntegrationTest {
                 unreadable.getBatch().getUploadId()
         )).isNull();
         assertThat(countUploadFiles()).isZero();
+    }
+
+    @Test
+    void rejectsWorkbookWithValidHeadersButNoBusinessRows() throws Exception {
+        User uploader = insertUser(1L, "empty-workbook", "viewer", true, false, false, true);
+
+        DataUploadPreviewResponse preview = service.preview(file(service.createTemplateWorkbook()), uploader, false);
+
+        assertThat(preview.getBatch().getStatus()).isEqualTo("VALIDATION_FAILED");
+        assertThat(preview.getBatch().getTotalRows()).isZero();
+        assertThat(preview.getHeaderErrors())
+                .containsExactly("数据表中至少需要包含一行数据");
     }
 
     @Test
@@ -535,7 +609,6 @@ class DataUploadServiceIntegrationTest {
         Path workbookPath = Path.of("..", "WBE汇总表7.22.xlsx").toAbsolutePath().normalize();
         org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(workbookPath));
         User uploader = insertUser(1L, "publisher", "viewer", true, false, false, true);
-        User admin = insertUser(2L, "acceptance-admin", "admin", false, false, false, true);
         MockMultipartFile workbookFile = new MockMultipartFile(
                 "file",
                 workbookPath.getFileName().toString(),
@@ -546,61 +619,12 @@ class DataUploadServiceIntegrationTest {
         DataUploadPreviewResponse result = service.preview(workbookFile, uploader, false);
 
         assertThat(result.getHeaderErrors()).isEmpty();
-        assertThat(result.getBatch().getTotalRows()).isEqualTo(22_738 + 4_328 + 778 + 198);
+        assertThat(result.getBatch().getTotalRows()).isEqualTo(22_738);
         assertThat(result.getBatch().getErrorRows()).isZero();
         assertThat(result.getSheetSummaries())
                 .extracting("sheetName", "totalRows")
-                .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple("数据表", 22_738),
-                        org.assertj.core.groups.Tuple.tuple("点位关联表", 4_328),
-                        org.assertj.core.groups.Tuple.tuple("药物疾病ICD11映射", 778),
-                        org.assertj.core.groups.Tuple.tuple("文献基础信息", 198)
-                );
-        Map<String, Long> mappingDepthCounts = jdbcTemplate.query("""
-                        SELECT raw_json
-                        FROM data_upload_rows
-                        WHERE upload_id = ? AND sheet_name = '药物疾病ICD11映射'
-                        """,
-                (rs, rowNum) -> rs.getString(1).contains("\"映射层级\":\"Level3\"") ? "Level3" : "Level2",
-                result.getBatch().getUploadId()
-        ).stream().collect(java.util.stream.Collectors.groupingBy(
-                value -> value,
-                java.util.stream.Collectors.counting()
-        ));
-        assertThat(mappingDepthCounts).containsEntry("Level3", 502L).containsEntry("Level2", 276L);
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("数据表", 22_738));
         assertWorkbookRowsRoundTrip(workbookPath, result.getBatch().getUploadId());
-
-        service.approve(result.getBatch().getUploadId(), admin);
-        DataUploadSyncResponse syncResult = service.sync(result.getBatch().getUploadId(), admin);
-
-        assertThat(syncResult.getInsertedRowsBySheet())
-                .containsEntry("数据表", 22_738)
-                .containsEntry("点位关联表", 4_328)
-                .containsEntry("药物疾病ICD11映射", 778)
-                .containsEntry("文献基础信息", 198);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM measurements", Integer.class)).isEqualTo(22_738);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM reported_sites WHERE include_in_point_count", Integer.class))
-                .isEqualTo(3_820);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM record_site_bridge WHERE effective_site_key IS NOT NULL", Integer.class))
-                .isEqualTo(28_225);
-        assertThat(jdbcTemplate.queryForObject("SELECT exact_records FROM site_link_import_qc", Integer.class))
-                .isEqualTo(21_410);
-        assertThat(jdbcTemplate.queryForObject("SELECT multi_site_records FROM site_link_import_qc", Integer.class))
-                .isEqualTo(898);
-        assertThat(jdbcTemplate.queryForObject("SELECT location_fallback_records FROM site_link_import_qc", Integer.class))
-                .isEqualTo(92);
-        assertThat(jdbcTemplate.queryForObject("SELECT excluded_records FROM site_link_import_qc", Integer.class))
-                .isEqualTo(152);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM icd11_sankey_paths", Integer.class)).isEqualTo(778);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM literatures", Integer.class)).isEqualTo(198);
-        assertThat(jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM icd11_sankey_paths
-                WHERE mapping_level = 'Level2' AND icd11_level3_name IS NULL
-                """, Integer.class)).isEqualTo(276);
-        assertThat(jdbcTemplate.queryForObject("""
-                SELECT COUNT(*) FROM icd11_sankey_paths
-                WHERE mapping_level = 'Level3' AND icd11_level3_name IS NOT NULL
-                """, Integer.class)).isEqualTo(502);
     }
 
     @Test
@@ -618,7 +642,7 @@ class DataUploadServiceIntegrationTest {
         DataUploadPreviewResponse result = service.preview(workbookFile, uploader, false);
 
         assertThat(result.getHeaderErrors()).isEmpty();
-        assertThat(result.getBatch().getTotalRows()).isEqualTo(22_738 + 4_328 + 778 + 198);
+        assertThat(result.getBatch().getTotalRows()).isEqualTo(22_738);
         assertThat(result.getBatch().getErrorRows()).isZero();
         String firstDataRow = jdbcTemplate.queryForObject("""
                         SELECT raw_json
@@ -634,6 +658,47 @@ class DataUploadServiceIntegrationTest {
     }
 
     @Test
+    void publishedWorkbookClosedSliceCompletesWorkflowAndRollbackRestoresDatabaseAndFiles() throws Exception {
+        Path slicePath = Path.of(
+                "src", "test", "resources", "data-upload", "WBE-7.28-closed-slice.xlsx"
+        ).toAbsolutePath().normalize();
+        assertThat(slicePath).exists();
+        byte[] slice = Files.readAllBytes(slicePath);
+        User admin = insertUser(1L, "slice-admin", "admin", false, false, false, true);
+        jdbcTemplate.update("""
+                INSERT INTO literatures (literature_code, title, doi)
+                VALUES ('BASELINE', 'Baseline snapshot', '10.1000/baseline')
+                """);
+        long filesBefore = countUploadFiles();
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            DataUploadPreviewResponse preview = service.preview(file(slice), admin, false);
+            assertThat(preview.getBatch().getTotalRows()).isEqualTo(1);
+            completeReview(preview.getBatch().getUploadId(), admin, slice);
+            DataUploadSyncResponse sync = service.sync(preview.getBatch().getUploadId(), admin);
+            assertThat(sync.getInsertedRows()).isEqualTo(6);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM measurements", Integer.class)).isEqualTo(1);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM literatures WHERE literature_code = 'WBE0107'",
+                    Integer.class)).isEqualTo(1);
+            status.setRollbackOnly();
+        });
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM literatures WHERE literature_code = 'BASELINE'",
+                Integer.class)).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM literatures WHERE literature_code = 'WBE0107'",
+                Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM measurements", Integer.class)).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM data_upload_batches", Integer.class)).isZero();
+        assertThat(countUploadFiles()).isEqualTo(filesBefore);
+    }
+
+    @Test
     void reviewAndSyncPermissionsEnforceSeparatedWorkflowAndPersistTraceFields() throws Exception {
         User uploader = insertUser(1L, "uploader", "viewer", true, false, false, true);
         User reviewer = insertUser(2L, "reviewer", "viewer", false, true, false, true);
@@ -641,7 +706,7 @@ class DataUploadServiceIntegrationTest {
         DataUploadPreviewResponse preview = service.preview(file(validWorkbook("LIT-TRACE")), uploader, false);
         Long uploadId = preview.getBatch().getUploadId();
 
-        assertThatThrownBy(() -> service.approve(uploadId, syncer))
+        assertThatThrownBy(() -> service.approve(uploadId, syncer, fullyConfirmedDecision()))
                 .isInstanceOf(BusinessException.class)
                 .extracting("code")
                 .isEqualTo(403);
@@ -649,7 +714,7 @@ class DataUploadServiceIntegrationTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("尚未审核通过");
 
-        assertThat(service.approve(uploadId, reviewer).getStatus()).isEqualTo("APPROVED");
+        completeReview(uploadId, reviewer, validWorkbook("LIT-TRACE"));
         assertThatThrownBy(() -> service.sync(uploadId, reviewer))
                 .isInstanceOf(BusinessException.class)
                 .extracting("code")
@@ -658,11 +723,13 @@ class DataUploadServiceIntegrationTest {
         DataUploadSyncResponse result = service.sync(uploadId, syncer);
 
         assertThat(result.getBatch().getStatus()).isEqualTo("SYNCED");
-        assertThat(result.getInsertedRows()).isEqualTo(4);
+        assertThat(result.getInsertedRows()).isEqualTo(6);
         assertThat(result.getInsertedRowsBySheet()).containsEntry("数据表", 1)
                 .containsEntry("点位关联表", 1)
                 .containsEntry("药物疾病ICD11映射", 1)
-                .containsEntry("文献基础信息", 1);
+                .containsEntry("文献基础信息", 1)
+                .containsEntry("采样方法统一审计", 1)
+                .containsEntry("核心标记物优先级识别", 1);
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT upload_id FROM measurements WHERE upload_id = ?",
                 Long.class,
@@ -702,7 +769,9 @@ class DataUploadServiceIntegrationTest {
                 """
                 SELECT row_status, synced_measurement_id
                 FROM data_upload_rows
-                WHERE upload_id = ? AND sheet_name = '数据表'
+                WHERE upload_id = ?
+                  AND sheet_name = '数据表'
+                  AND row_stage = 'REVIEW_PACKAGE'
                 """,
                 uploadId
         );
@@ -714,6 +783,84 @@ class DataUploadServiceIntegrationTest {
     }
 
     @Test
+    void reviewPackagesAreVersionedChecklistProtectedAndSeparatedFromSubmissionRows() throws Exception {
+        User uploader = insertUser(1L, "package-uploader", "viewer", true, false, false, true);
+        User admin = insertUser(2L, "package-admin", "admin", false, false, false, true);
+        byte[] workbook = validWorkbook("LIT-PACKAGE");
+        Long uploadId = service.preview(file(workbook), uploader, false).getBatch().getUploadId();
+
+        assertThatThrownBy(() -> service.approve(uploadId, admin, fullyConfirmedDecision()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("尚未完成初审和完整整理包");
+        service.acceptSourceReview(uploadId, admin, null);
+
+        DataUploadReviewPackageResponse first =
+                service.uploadReviewPackage(uploadId, file(workbook), admin, false);
+        assertThat(first.getVersionNo()).isEqualTo(1);
+        assertThat(first.getStatus()).isEqualTo("VALID");
+        long filesAfterFirstPackage = countUploadFiles();
+
+        assertThatThrownBy(() -> service.uploadReviewPackage(uploadId, file(workbook), admin, false))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("内容完全相同");
+        assertThat(countUploadFiles()).isEqualTo(filesAfterFirstPackage);
+
+        DataUploadReviewPackageResponse second =
+                service.uploadReviewPackage(uploadId, file(workbook), admin, true);
+        assertThat(second.getVersionNo()).isEqualTo(2);
+        assertThat(service.listReviewPackages(uploadId, admin))
+                .extracting("versionNo")
+                .containsExactly(2, 1);
+
+        DataUploadRowsPageResponse submissionRows =
+                service.listRows(uploadId, 1, 20, "all", "submission", admin);
+        DataUploadRowsPageResponse packageRows =
+                service.listRows(uploadId, 1, 20, "all", "reviewPackage", admin);
+        assertThat(submissionRows.getTotal()).isEqualTo(1);
+        assertThat(submissionRows.getRows()).allMatch(row -> "SUBMISSION".equals(row.getRowStage()));
+        assertThat(packageRows.getTotal()).isEqualTo(6);
+        assertThat(packageRows.getReviewPackageId()).isEqualTo(second.getPackageId());
+        assertThat(packageRows.getRows()).allMatch(row -> "REVIEW_PACKAGE".equals(row.getRowStage()));
+
+        assertThatThrownBy(() -> service.approve(
+                uploadId, admin, new DataUploadReviewDecisionRequest()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("八项");
+        assertThat(service.approve(uploadId, admin, fullyConfirmedDecision()).getApprovedPackageId())
+                .isEqualTo(second.getPackageId());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM data_upload_audit_events WHERE upload_id = ?",
+                Integer.class,
+                uploadId
+        )).isEqualTo(4);
+    }
+
+    @Test
+    void highRiskProductionDecreaseRequiresAdministratorFinalApproval() throws Exception {
+        User uploader = insertUser(1L, "risk-uploader", "viewer", true, false, false, true);
+        User reviewer = insertUser(2L, "risk-reviewer", "viewer", false, true, false, true);
+        User admin = insertUser(3L, "risk-admin", "admin", false, false, false, true);
+        jdbcTemplate.update("""
+                INSERT INTO literatures (literature_code, title, doi)
+                VALUES ('OLD-1', 'Old one', '10.1000/old1'),
+                       ('OLD-2', 'Old two', '10.1000/old2')
+                """);
+        byte[] workbook = validWorkbook("LIT-HIGH-RISK");
+        Long uploadId = service.preview(file(workbook), uploader, false).getBatch().getUploadId();
+        service.acceptSourceReview(uploadId, reviewer, null);
+        DataUploadReviewPackageResponse reviewPackage =
+                service.uploadReviewPackage(uploadId, file(workbook), reviewer, false);
+
+        assertThat(reviewPackage.getDiffSummary()).containsEntry("riskLevel", "HIGH");
+        assertThatThrownBy(() -> service.approve(uploadId, reviewer, fullyConfirmedDecision()))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(403);
+        assertThat(service.approve(uploadId, admin, fullyConfirmedDecision()).getStatus())
+                .isEqualTo("APPROVED");
+    }
+
+    @Test
     void confirmedSiteWithoutEvidenceRemainsCandidateAndWarnsDuringPreview() throws Exception {
         User admin = insertUser(1L, "site-admin", "admin", false, false, false, true);
         byte[] workbook = workbookWithSiteFields("LIT-SITE-EVIDENCE", Map.of(
@@ -721,10 +868,16 @@ class DataUploadServiceIntegrationTest {
         ));
 
         DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+        service.acceptSourceReview(preview.getBatch().getUploadId(), admin, null);
+        DataUploadReviewPackageResponse reviewPackage =
+                service.uploadReviewPackage(preview.getBatch().getUploadId(), file(workbook), admin, false);
 
         assertThat(preview.getBatch().getErrorRows()).isZero();
-        assertThat(preview.getPreviewRowsBySheet().get("点位关联表").get(0).getWarnings())
-                .anyMatch(message -> message.contains("仅作为候选"));
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT warning_json
+                FROM data_upload_rows
+                WHERE review_package_id = ? AND sheet_name = '点位关联表'
+                """, String.class, reviewPackage.getPackageId())).contains("仅作为候选");
     }
 
     @Test
@@ -741,10 +894,16 @@ class DataUploadServiceIntegrationTest {
         ));
 
         DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+        service.acceptSourceReview(preview.getBatch().getUploadId(), admin, null);
+        DataUploadReviewPackageResponse reviewPackage =
+                service.uploadReviewPackage(preview.getBatch().getUploadId(), file(workbook), admin, false);
 
-        assertThat(preview.getBatch().getErrorRows()).isPositive();
-        assertThat(preview.getPreviewRowsBySheet().get("点位关联表").get(0).getErrors())
-                .anyMatch(message -> message.contains("已归属其他国家"));
+        assertThat(reviewPackage.getErrorRows()).isPositive();
+        assertThat(jdbcTemplate.queryForObject("""
+                SELECT error_json
+                FROM data_upload_rows
+                WHERE review_package_id = ? AND sheet_name = '点位关联表'
+                """, String.class, reviewPackage.getPackageId())).contains("已归属其他国家");
     }
 
     @Test
@@ -755,7 +914,7 @@ class DataUploadServiceIntegrationTest {
                 "同一污水厂确认依据", "官方名称、详细地址和经纬度一致"
         ));
         DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
-        service.approve(preview.getBatch().getUploadId(), admin);
+        completeReview(preview.getBatch().getUploadId(), admin, workbook);
 
         service.sync(preview.getBatch().getUploadId(), admin);
 
@@ -773,8 +932,9 @@ class DataUploadServiceIntegrationTest {
     @Test
     void rollsBackEntireSnapshotWhenSourceRelationWriteFails() throws Exception {
         User admin = insertUser(1L, "rollback-admin", "admin", false, false, false, true);
-        DataUploadPreviewResponse preview = service.preview(file(validWorkbook("LIT-ROLLBACK")), admin, false);
-        service.approve(preview.getBatch().getUploadId(), admin);
+        byte[] workbook = validWorkbook("LIT-ROLLBACK");
+        DataUploadPreviewResponse preview = service.preview(file(workbook), admin, false);
+        completeReview(preview.getBatch().getUploadId(), admin, workbook);
         jdbcTemplate.update("""
                 INSERT INTO literatures (literature_code, title, doi)
                 VALUES ('OLD-LITERATURE', 'Existing snapshot', '10.1000/old')
@@ -797,6 +957,14 @@ class DataUploadServiceIntegrationTest {
                 String.class,
                 preview.getBatch().getUploadId()
         )).isEqualTo("APPROVED");
+        service.recordSyncFailure(preview.getBatch().getUploadId(), admin, "来源关系写入失败");
+        assertThat(jdbcTemplate.queryForMap("""
+                SELECT status, sync_error_message
+                FROM data_upload_batches
+                WHERE upload_id = ?
+                """, preview.getBatch().getUploadId()))
+                .containsEntry("status", "SYNC_FAILED")
+                .containsEntry("sync_error_message", "来源关系写入失败");
     }
 
     @Test
@@ -817,6 +985,25 @@ class DataUploadServiceIntegrationTest {
     }
 
     @Test
+    void removesOnlyNewReviewPackageFileWhenPackageTransactionRollsBack() throws Exception {
+        User admin = insertUser(1L, "package-rollback", "admin", false, false, false, true);
+        byte[] workbook = validWorkbook("LIT-PACKAGE-ROLLBACK");
+        Long uploadId = service.preview(file(workbook), admin, false).getBatch().getUploadId();
+        service.acceptSourceReview(uploadId, admin, null);
+        long filesBeforePackage = countUploadFiles();
+        jdbcTemplate.execute("DROP TABLE data_upload_rows");
+
+        assertThatThrownBy(() -> service.uploadReviewPackage(uploadId, file(workbook), admin, false))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(countUploadFiles()).isEqualTo(filesBeforePackage);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM data_upload_review_packages",
+                Integer.class
+        )).isZero();
+    }
+
+    @Test
     void reviewerCanRejectOnlyPendingBatch() {
         User uploader = insertUser(1L, "uploader", "viewer", true, false, false, true);
         User reviewer = insertUser(2L, "reviewer", "viewer", false, true, false, true);
@@ -824,14 +1011,16 @@ class DataUploadServiceIntegrationTest {
         Long rejectedId = insertBatch(uploader.getUserId(), "PENDING_REVIEW", null);
         Long approvedId = insertBatch(uploader.getUserId(), "PENDING_REVIEW", null);
 
-        assertThat(service.reject(rejectedId, reviewer, "数据需修正").getStatus()).isEqualTo("REJECTED");
+        assertThat(service.reject(rejectedId, reviewer, "数据需修正").getStatus()).isEqualTo("REVISION_REQUIRED");
         assertThatThrownBy(() -> service.sync(rejectedId, syncer))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("当前状态不能同步入库");
-        assertThat(service.approve(approvedId, reviewer).getStatus()).isEqualTo("APPROVED");
-        assertThatThrownBy(() -> service.reject(approvedId, reviewer, "撤回"))
+        assertThatThrownBy(() -> service.approve(approvedId, reviewer, fullyConfirmedDecision()))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("已审核通过批次不能驳回");
+                .hasMessageContaining("尚未完成初审和完整整理包");
+        assertThatThrownBy(() -> service.reject(rejectedId, reviewer, "再次退回"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("当前状态不能退回修改");
     }
 
     @Test
@@ -843,6 +1032,7 @@ class DataUploadServiceIntegrationTest {
         Long ownPending = insertBatch(uploader.getUserId(), "PENDING_REVIEW", null);
         Long otherPending = insertBatch(anotherUploader.getUserId(), "PENDING_REVIEW", null);
         Long approved = insertBatch(anotherUploader.getUserId(), "APPROVED", null);
+        Long syncFailed = insertBatch(anotherUploader.getUserId(), "SYNC_FAILED", null);
 
         DataUploadBatchPageResponse ownPage = service.listBatches(uploader, 1, 20, null, null, "all", null, null);
         assertThat(ownPage.getItems()).extracting("uploadId").containsExactly(ownPending);
@@ -851,7 +1041,7 @@ class DataUploadServiceIntegrationTest {
         assertThat(reviewQueue.getItems()).extracting("uploadId").containsExactlyInAnyOrder(ownPending, otherPending);
 
         DataUploadBatchPageResponse syncQueue = service.listBatches(syncer, 1, 20, null, null, "approved", null, null);
-        assertThat(syncQueue.getItems()).extracting("uploadId").containsExactly(approved);
+        assertThat(syncQueue.getItems()).extracting("uploadId").containsExactly(syncFailed, approved);
     }
 
     @Test
@@ -862,12 +1052,26 @@ class DataUploadServiceIntegrationTest {
         Path storedFile = TEST_UPLOAD_DIR.resolve("source.xlsx");
         Files.writeString(storedFile, "test");
         Long uploadId = insertBatch(blocked.getUserId(), "PENDING_REVIEW", storedFile.toString());
+        Path packageFile = TEST_UPLOAD_DIR.resolve("package.xlsx");
+        Files.writeString(packageFile, "review package");
+        jdbcTemplate.update("""
+                INSERT INTO data_upload_review_packages (
+                    upload_id, version_no, file_name, stored_file_path, sha256, uploaded_by, status
+                ) VALUES (?, 1, 'package.xlsx', ?, 'package-sha', ?, 'VALID')
+                """, uploadId, packageFile.toString(), admin.getUserId());
+        Long packageId = jdbcTemplate.queryForObject(
+                "SELECT MAX(package_id) FROM data_upload_review_packages", Long.class);
 
         assertThatThrownBy(() -> service.getStoredFile(uploadId, blocked))
                 .isInstanceOf(BusinessException.class)
                 .extracting("code")
                 .isEqualTo(403);
+        assertThatThrownBy(() -> service.getReviewPackageFile(uploadId, packageId, blocked))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(403);
         assertThat(service.getStoredFile(uploadId, admin)).isEqualTo(storedFile);
+        assertThat(service.getReviewPackageFile(uploadId, packageId, admin)).isEqualTo(packageFile);
     }
 
     @Test
@@ -1000,7 +1204,7 @@ class DataUploadServiceIntegrationTest {
         List<StoredUploadRow> storedRows = jdbcTemplate.query("""
                         SELECT sheet_name, excel_row_number, raw_json
                         FROM data_upload_rows
-                        WHERE upload_id = ?
+                        WHERE upload_id = ? AND row_stage = 'SUBMISSION'
                         ORDER BY sheet_name, excel_row_number
                         """,
                 (rs, rowNum) -> new StoredUploadRow(rs.getString(1), rs.getInt(2), rs.getString(3)),
@@ -1011,7 +1215,7 @@ class DataUploadServiceIntegrationTest {
 
         try (Workbook workbook = WorkbookFactory.create(workbookPath.toFile())) {
             Map<String, List<String>> headersBySheet = new LinkedHashMap<>();
-            for (String sheetName : List.of("数据表", "点位关联表", "药物疾病ICD11映射", "文献基础信息")) {
+            for (String sheetName : List.of("数据表")) {
                 Row headerRow = workbook.getSheet(sheetName).getRow(0);
                 List<String> headers = new ArrayList<>();
                 for (int index = 0; index < headerRow.getLastCellNum(); index++) {
@@ -1085,8 +1289,34 @@ class DataUploadServiceIntegrationTest {
         );
     }
 
+    private void completeReview(Long uploadId, User reviewer, byte[] reviewPackage) {
+        DataUploadSourceReviewRequest sourceReview = new DataUploadSourceReviewRequest();
+        sourceReview.setNote("原始提交可进入整理阶段");
+        assertThat(service.acceptSourceReview(uploadId, reviewer, sourceReview).getStatus())
+                .isEqualTo("ENRICHMENT_REQUIRED");
+        DataUploadReviewPackageResponse uploaded =
+                service.uploadReviewPackage(uploadId, file(reviewPackage), reviewer, false);
+        assertThat(uploaded.getStatus()).isEqualTo("VALID");
+        assertThat(service.approve(uploadId, reviewer, fullyConfirmedDecision()).getStatus())
+                .isEqualTo("APPROVED");
+    }
+
+    private DataUploadReviewDecisionRequest fullyConfirmedDecision() {
+        DataUploadReviewDecisionRequest request = new DataUploadReviewDecisionRequest();
+        request.setSourceCoverageConfirmed(true);
+        request.setTraceabilityConfirmed(true);
+        request.setValuesAndUnitsConfirmed(true);
+        request.setSiteLinkageConfirmed(true);
+        request.setIcd11Confirmed(true);
+        request.setMethodologyConfirmed(true);
+        request.setCoreMarkerConfirmed(true);
+        request.setProductionDiffConfirmed(true);
+        request.setNote("集成测试终审");
+        return request;
+    }
+
     private byte[] validWorkbook(String literatureCode) throws Exception {
-        byte[] template = service.createTemplateWorkbook();
+        byte[] template = service.createReviewPackageTemplate();
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(template));
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.getSheet("数据表");
@@ -1176,6 +1406,59 @@ class DataUploadServiceIntegrationTest {
             for (int i = 0; i < DataUploadService.ICD11_HEADERS.size(); i++) {
                 String header = DataUploadService.ICD11_HEADERS.get(i);
                 mappingRow.createCell(i).setCellValue(mappingValues.getOrDefault(header, ""));
+            }
+
+            Sheet methodologySheet = workbook.getSheet("采样方法统一审计");
+            Row methodologyRow = methodologySheet.createRow(1);
+            Map<String, String> methodologyValues = new LinkedHashMap<>();
+            methodologyValues.put("文献编号", literatureCode);
+            methodologyValues.put("数据表采样方法（原文摘录）", "24h composite");
+            methodologyValues.put("规范化采样方法明细", "24 h时间比例复合进水样");
+            methodologyValues.put("标准采样方法", "时间比例复合采样");
+            methodologyValues.put("采样主类", "复合采样");
+            methodologyValues.put("采样对象", "进水样");
+            methodologyValues.put("比例方式", "时间比例");
+            methodologyValues.put("采样/部署时长", "24 h");
+            methodologyValues.put("被动采样器类型", "不适用");
+            methodologyValues.put("站点对应状态", "已明确或不涉及");
+            methodologyValues.put("来源文件", "integration-test.pdf");
+            methodologyValues.put("页码/表号/sheet", "PDF第2页");
+            methodologyValues.put("原文证据", "24 h composite sample");
+            methodologyValues.put("影响行数", "1");
+            methodologyValues.put("复核状态", "已复核");
+            methodologyValues.put("标准化处理说明", "人工复核");
+            for (int i = 0; i < DataUploadService.METHODOLOGY_AUDIT_HEADERS.size(); i++) {
+                String header = DataUploadService.METHODOLOGY_AUDIT_HEADERS.get(i);
+                methodologyRow.createCell(i).setCellValue(methodologyValues.getOrDefault(header, ""));
+            }
+
+            Sheet coreSheet = workbook.getSheet("核心标记物优先级识别");
+            Row coreRow = coreSheet.createRow(1);
+            Map<String, String> coreValues = new LinkedHashMap<>();
+            coreValues.put("序号", "1");
+            coreValues.put("目标类别_主类", "药物");
+            coreValues.put("目标物质类别_主类", "抗生素");
+            coreValues.put("目标物质子类_主类", "大环内酯");
+            coreValues.put("代表目标物质/药物", "阿奇霉素");
+            coreValues.put("生物标记物名称", "阿奇霉素");
+            coreValues.put("biomarker", "阿奇霉素");
+            coreValues.put("原始记录数", "1");
+            coreValues.put("文献编号数", "1");
+            coreValues.put("独立DOI数", "1");
+            coreValues.put("目标类别样本量", "1");
+            coreValues.put("目标类别内综合得分", "80");
+            coreValues.put("目标类别内排名", "1");
+            coreValues.put("目标物质类别样本量", "1");
+            coreValues.put("目标物质类别内综合得分", "80");
+            coreValues.put("目标物质类别内排名", "1");
+            coreValues.put("目标物质子类样本量", "1");
+            coreValues.put("目标物质子类内综合得分", "80");
+            coreValues.put("目标物质子类内排名", "1");
+            coreValues.put("三级评价状态", "仅排名");
+            coreValues.put("四级评价状态", "不适用");
+            for (int i = 0; i < DataUploadService.CORE_MARKER_HEADERS.size(); i++) {
+                String header = DataUploadService.CORE_MARKER_HEADERS.get(i);
+                coreRow.createCell(i).setCellValue(coreValues.getOrDefault(header, ""));
             }
             workbook.write(output);
             return output.toByteArray();

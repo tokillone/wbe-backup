@@ -30,4 +30,16 @@ public class DataUploadBatchResponse {
     private String reviewNote;
     private Long syncedBy;
     private String syncedByName;
+    private String syncErrorMessage;
+    private Long sourceReviewedBy;
+    private String sourceReviewedByName;
+    private LocalDateTime sourceReviewedAt;
+    private String sourceReviewNote;
+    private Long currentPackageId;
+    private Integer currentPackageVersion;
+    private String currentPackageFileName;
+    private String currentPackageStatus;
+    private Integer currentPackageRows;
+    private Long approvedPackageId;
+    private Boolean reviewChecklistComplete;
 }

@@ -19,6 +19,8 @@ WITH source_rows AS (
       END AS country_key,
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.province), ''), '[^0-9a-zA-Z]+', '')) AS province_key,
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.city), ''), '[^0-9a-zA-Z]+', '')) AS city_key,
+      rs.country AS source_country,
+      rs.province AS source_province,
       COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') AS target_class,
       NULLIF(TRIM(c.substance_category), '') AS category,
       COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类') AS source_subcategory,
@@ -91,17 +93,31 @@ SELECT gl.level, gl.geo_key, gl.parent_geo_key, gl.display_name,
   converted_rows.site_identity_key, converted_rows.source_city, converted_rows.doi,
   converted_rows.measurement_id, converted_rows.pndl_mg_d_1000inh, converted_rows.pndl_source
 FROM converted_rows
+JOIN geo_location_aliases ga ON ga.level = 'admin1'
+  AND ga.country_key = converted_rows.country_key
+  AND ga.alias_key = converted_rows.province_key
 JOIN geo_locations gl ON gl.level = 'admin1' AND gl.is_mappable = TRUE
-  AND gl.parent_geo_key = converted_rows.country_key
-  AND converted_rows.province_key <> ''
-  AND (
-    converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.province), ''), '[^0-9a-zA-Z]+', ''))
-    OR converted_rows.province_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
-    OR converted_rows.province_key = SUBSTRING_INDEX(gl.geo_key, '|', -1)
-    OR converted_rows.province_key = CONCAT(SUBSTRING_INDEX(gl.geo_key, '|', -1), 'province')
-    OR CONCAT(converted_rows.province_key, 'province') =
-      LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
-  )
+  AND gl.geo_key = ga.geo_key
+UNION ALL
+SELECT 'admin1' AS level,
+  CAST(CONCAT(converted_rows.country_key, '|__unassigned__') AS CHAR(180)) AS geo_key,
+  converted_rows.country_key AS parent_geo_key,
+  'UNASSIGNED_ADMIN1' AS display_name,
+  country_location.country, NULL AS province, NULL AS city,
+  country_location.latitude, country_location.longitude,
+  converted_rows.target_class, converted_rows.category, converted_rows.source_subcategory,
+  converted_rows.source_biomarker_key, converted_rows.source_biomarker_label,
+  converted_rows.biomarker_cas, converted_rows.source_year,
+  converted_rows.site_identity_key, converted_rows.source_city, converted_rows.doi,
+  converted_rows.measurement_id, converted_rows.pndl_mg_d_1000inh, converted_rows.pndl_source
+FROM converted_rows
+JOIN geo_locations country_location ON country_location.level = 'country'
+  AND country_location.is_mappable = TRUE
+  AND country_location.geo_key = converted_rows.country_key
+LEFT JOIN geo_location_aliases ga ON ga.level = 'admin1'
+  AND ga.country_key = converted_rows.country_key
+  AND ga.alias_key = converted_rows.province_key
+WHERE ga.geo_key IS NULL
 UNION ALL
 SELECT gl.level, gl.geo_key, gl.parent_geo_key, gl.display_name,
   gl.country, gl.province, gl.city, gl.latitude, gl.longitude,
@@ -111,8 +127,11 @@ SELECT gl.level, gl.geo_key, gl.parent_geo_key, gl.display_name,
   converted_rows.site_identity_key, converted_rows.source_city, converted_rows.doi,
   converted_rows.measurement_id, converted_rows.pndl_mg_d_1000inh, converted_rows.pndl_source
 FROM converted_rows
+JOIN geo_location_aliases ga ON ga.level = 'admin1'
+  AND ga.country_key = converted_rows.country_key
+  AND ga.alias_key = converted_rows.province_key
 JOIN geo_locations gl ON gl.level = 'city' AND gl.is_mappable = TRUE
-  AND SUBSTRING_INDEX(gl.geo_key, '|', 1) = converted_rows.country_key
+  AND gl.parent_geo_key = ga.geo_key
   AND converted_rows.city_key <> ''
   AND (
     converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.city), ''), '[^0-9a-zA-Z]+', ''))
@@ -121,7 +140,40 @@ JOIN geo_locations gl ON gl.level = 'city' AND gl.is_mappable = TRUE
     OR converted_rows.city_key = CONCAT(SUBSTRING_INDEX(gl.geo_key, '|', -1), 'city')
     OR CONCAT(converted_rows.city_key, 'city') =
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(gl.display_name), ''), '[^0-9a-zA-Z]+', ''))
-  );
+  )
+UNION ALL
+SELECT 'city' AS level,
+  CAST(CONCAT(ga.geo_key, '|__unassigned__') AS CHAR(180)) AS geo_key,
+  ga.geo_key AS parent_geo_key,
+  'UNASSIGNED_CITY' AS display_name,
+  admin_location.country, admin_location.province, NULL AS city,
+  admin_location.latitude, admin_location.longitude,
+  converted_rows.target_class, converted_rows.category, converted_rows.source_subcategory,
+  converted_rows.source_biomarker_key, converted_rows.source_biomarker_label,
+  converted_rows.biomarker_cas, converted_rows.source_year,
+  converted_rows.site_identity_key, converted_rows.source_city, converted_rows.doi,
+  converted_rows.measurement_id, converted_rows.pndl_mg_d_1000inh, converted_rows.pndl_source
+FROM converted_rows
+JOIN geo_location_aliases ga ON ga.level = 'admin1'
+  AND ga.country_key = converted_rows.country_key
+  AND ga.alias_key = converted_rows.province_key
+JOIN geo_locations admin_location ON admin_location.level = 'admin1'
+  AND admin_location.is_mappable = TRUE
+  AND admin_location.geo_key = ga.geo_key
+LEFT JOIN geo_locations city_location ON city_location.level = 'city'
+  AND city_location.is_mappable = TRUE
+  AND city_location.parent_geo_key = ga.geo_key
+  AND converted_rows.city_key <> ''
+  AND (
+    converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(city_location.city), ''), '[^0-9a-zA-Z]+', ''))
+    OR converted_rows.city_key = LOWER(REGEXP_REPLACE(COALESCE(TRIM(city_location.display_name), ''), '[^0-9a-zA-Z]+', ''))
+    OR converted_rows.city_key = SUBSTRING_INDEX(city_location.geo_key, '|', -1)
+    OR converted_rows.city_key = CONCAT(SUBSTRING_INDEX(city_location.geo_key, '|', -1), 'city')
+    OR CONCAT(converted_rows.city_key, 'city') =
+      LOWER(REGEXP_REPLACE(COALESCE(TRIM(city_location.display_name), ''), '[^0-9a-zA-Z]+', ''))
+  )
+WHERE converted_rows.country_key = 'china'
+  AND city_location.geo_key IS NULL;
 
 ALTER TABLE map_refresh_matched
   ADD INDEX idx_refresh_region_measurement (level, geo_key, measurement_id),
