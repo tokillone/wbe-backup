@@ -12,6 +12,7 @@ import com.licong.webbackup.dto.upload.DataUploadSourceReviewRequest;
 import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.exception.BusinessException;
+import com.licong.webbackup.exception.WorkflowStateException;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -129,7 +130,9 @@ class DataUploadServiceIntegrationTest {
                     approved_package_id BIGINT NULL,
                     review_checklist_json CLOB NULL,
                     review_diff_json CLOB NULL,
-                    sync_error_message VARCHAR(500) NULL
+                    sync_error_message VARCHAR(500) NULL,
+                    current_revision_no INT NOT NULL DEFAULT 1,
+                    published_release_id BIGINT NULL
                 )
                 """);
         jdbcTemplate.execute("""
@@ -711,8 +714,8 @@ class DataUploadServiceIntegrationTest {
                 .extracting("code")
                 .isEqualTo(403);
         assertThatThrownBy(() -> service.sync(uploadId, syncer))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("尚未审核通过");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
 
         completeReview(uploadId, reviewer, validWorkbook("LIT-TRACE"));
         assertThatThrownBy(() -> service.sync(uploadId, reviewer))
@@ -778,8 +781,8 @@ class DataUploadServiceIntegrationTest {
         assertThat(rowState.get("row_status")).isEqualTo("SYNCED");
         assertThat(rowState.get("synced_measurement_id")).isNotNull();
         assertThatThrownBy(() -> service.reject(uploadId, reviewer, "too late"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("已入库批次不能驳回");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
     }
 
     @Test
@@ -790,8 +793,8 @@ class DataUploadServiceIntegrationTest {
         Long uploadId = service.preview(file(workbook), uploader, false).getBatch().getUploadId();
 
         assertThatThrownBy(() -> service.approve(uploadId, admin, fullyConfirmedDecision()))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("尚未完成初审和完整整理包");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
         service.acceptSourceReview(uploadId, admin, null);
 
         DataUploadReviewPackageResponse first =
@@ -943,7 +946,8 @@ class DataUploadServiceIntegrationTest {
 
         assertThatThrownBy(() -> service.sync(preview.getBatch().getUploadId(), admin))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("工作簿同步失败");
+                .hasMessage("数据同步未完成，请稍后重试")
+                .hasMessageNotContaining("SQL");
 
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM literatures", Integer.class)).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject(
@@ -964,7 +968,8 @@ class DataUploadServiceIntegrationTest {
                 WHERE upload_id = ?
                 """, preview.getBatch().getUploadId()))
                 .containsEntry("status", "SYNC_FAILED")
-                .containsEntry("sync_error_message", "来源关系写入失败");
+                .containsEntry("sync_error_message", "数据同步未完成，请重试；如持续失败，请联系系统管理员")
+                .doesNotContainValue("来源关系写入失败");
     }
 
     @Test
@@ -1013,14 +1018,14 @@ class DataUploadServiceIntegrationTest {
 
         assertThat(service.reject(rejectedId, reviewer, "数据需修正").getStatus()).isEqualTo("REVISION_REQUIRED");
         assertThatThrownBy(() -> service.sync(rejectedId, syncer))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("当前状态不能同步入库");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
         assertThatThrownBy(() -> service.approve(approvedId, reviewer, fullyConfirmedDecision()))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("尚未完成初审和完整整理包");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
         assertThatThrownBy(() -> service.reject(rejectedId, reviewer, "再次退回"))
-                .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("当前状态不能退回修改");
+                .isInstanceOf(WorkflowStateException.class)
+                .hasMessage("当前记录状态已发生变化，请刷新页面后重试");
     }
 
     @Test

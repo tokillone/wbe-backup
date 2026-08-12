@@ -14,6 +14,7 @@ import com.licong.webbackup.dto.upload.RejectUploadRequest;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.service.DataUploadService;
 import com.licong.webbackup.service.Icd11SankeyService;
+import com.licong.webbackup.service.SimplifiedDataUploadService;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -42,13 +43,33 @@ public class DataUploadController {
     private final SecuritySupport securitySupport;
     private final DataUploadService dataUploadService;
     private final Icd11SankeyService icd11SankeyService;
+    private final SimplifiedDataUploadService simplifiedDataUploadService;
 
     public DataUploadController(SecuritySupport securitySupport,
                                 DataUploadService dataUploadService,
-                                Icd11SankeyService icd11SankeyService) {
+                                Icd11SankeyService icd11SankeyService,
+                                SimplifiedDataUploadService simplifiedDataUploadService) {
         this.securitySupport = securitySupport;
         this.dataUploadService = dataUploadService;
         this.icd11SankeyService = icd11SankeyService;
+        this.simplifiedDataUploadService = simplifiedDataUploadService;
+    }
+
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<DataUploadPreviewResponse> createSubmission(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam("file") MultipartFile file) {
+        User user = securitySupport.requireUser(authorization);
+        return ApiResponse.success("投稿已接收", simplifiedDataUploadService.createSubmission(file, user));
+    }
+
+    @PostMapping(value = "/{uploadId}/submission-revisions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<DataUploadPreviewResponse> createSubmissionRevision(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long uploadId,
+            @RequestParam("file") MultipartFile file) {
+        User user = securitySupport.requireUser(authorization);
+        return ApiResponse.success("修订版本已接收", simplifiedDataUploadService.createRevision(uploadId, file, user));
     }
 
     @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -86,8 +107,38 @@ public class DataUploadController {
             @RequestParam(value = "allowDuplicate", defaultValue = "false") boolean allowDuplicate,
             @RequestParam("file") MultipartFile file) {
         User user = securitySupport.requireUser(authorization);
-        return ApiResponse.success("完整整理包解析完成",
-                dataUploadService.uploadReviewPackage(uploadId, file, user, allowDuplicate));
+        return ApiResponse.success("五表审核包解析完成",
+                simplifiedDataUploadService.uploadReviewPackage(uploadId, file, user));
+    }
+
+    @PostMapping("/{uploadId}/return")
+    public ApiResponse<DataUploadBatchResponse> returnForRevision(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long uploadId,
+            @RequestBody(required = false) RejectUploadRequest request) {
+        User user = securitySupport.requireUser(authorization);
+        String reason = request == null ? null : request.getReason();
+        return ApiResponse.success("已退回投稿人修改",
+                simplifiedDataUploadService.returnForRevision(uploadId, user, reason));
+    }
+
+    @PostMapping("/{uploadId}/publish")
+    public ApiResponse<DataUploadSyncResponse> publish(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long uploadId) {
+        User user = securitySupport.requireUser(authorization);
+        try {
+            DataUploadSyncResponse result = simplifiedDataUploadService.publish(uploadId, user);
+            icd11SankeyService.invalidateCache();
+            return ApiResponse.success("增量入库完成", result);
+        } catch (RuntimeException exception) {
+            try {
+                simplifiedDataUploadService.recordPublishFailure(uploadId, user, exception.getMessage());
+            } catch (RuntimeException auditException) {
+                exception.addSuppressed(auditException);
+            }
+            throw exception;
+        }
     }
 
     @GetMapping("/{uploadId}/review-packages")
@@ -154,8 +205,36 @@ public class DataUploadController {
             @RequestHeader(value = "Authorization", required = false) String authorization) {
         User user = securitySupport.requireUser(authorization);
         dataUploadService.requireCanUpload(user);
-        byte[] bytes = dataUploadService.createTemplateWorkbook();
+        byte[] bytes = simplifiedDataUploadService.createSubmissionTemplate();
         String encodedName = URLEncoder.encode("WBE数据上传模板.xlsx", StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentLength(bytes.length)
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encodedName)
+                .body(new ByteArrayResource(bytes));
+    }
+
+    @GetMapping("/submission-template")
+    public ResponseEntity<Resource> downloadSubmissionTemplate(
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        User user = securitySupport.requireUser(authorization);
+        dataUploadService.requireCanUpload(user);
+        byte[] bytes = simplifiedDataUploadService.createSubmissionTemplate();
+        String encodedName = URLEncoder.encode("WBE原始数据投稿模板.xlsx", StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentLength(bytes.length)
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encodedName)
+                .body(new ByteArrayResource(bytes));
+    }
+
+    @GetMapping("/{uploadId}/review-draft")
+    public ResponseEntity<Resource> downloadReviewDraft(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long uploadId) {
+        User user = securitySupport.requireUser(authorization);
+        byte[] bytes = simplifiedDataUploadService.createReviewDraft(uploadId, user);
+        String encodedName = URLEncoder.encode("WBE五表审核草稿-" + uploadId + ".xlsx", StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok()
                 .contentLength(bytes.length)
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))

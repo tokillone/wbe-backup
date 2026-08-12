@@ -42,4 +42,6 @@ public class DataUploadBatchResponse {
     private Integer currentPackageRows;
     private Long approvedPackageId;
     private Boolean reviewChecklistComplete;
+    private Integer currentRevisionNo;
+    private Long publishedReleaseId;
 }

@@ -5,6 +5,7 @@ import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.service.DataUploadService;
 import com.licong.webbackup.service.Icd11SankeyService;
+import com.licong.webbackup.service.SimplifiedDataUploadService;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 
@@ -22,12 +23,13 @@ class DataUploadControllerIcd11CacheTest {
         SecuritySupport securitySupport = mock(SecuritySupport.class);
         DataUploadService dataUploadService = mock(DataUploadService.class);
         Icd11SankeyService sankeyService = mock(Icd11SankeyService.class);
+        SimplifiedDataUploadService simplifiedService = mock(SimplifiedDataUploadService.class);
         User user = mock(User.class);
         DataUploadSyncResponse response = DataUploadSyncResponse.builder().insertedRows(1).build();
         when(securitySupport.requireUser("token")).thenReturn(user);
         when(dataUploadService.sync(7L, user)).thenReturn(response);
         DataUploadController controller =
-                new DataUploadController(securitySupport, dataUploadService, sankeyService);
+                new DataUploadController(securitySupport, dataUploadService, sankeyService, simplifiedService);
 
         controller.sync("token", 7L);
 
@@ -41,11 +43,12 @@ class DataUploadControllerIcd11CacheTest {
         SecuritySupport securitySupport = mock(SecuritySupport.class);
         DataUploadService dataUploadService = mock(DataUploadService.class);
         Icd11SankeyService sankeyService = mock(Icd11SankeyService.class);
+        SimplifiedDataUploadService simplifiedService = mock(SimplifiedDataUploadService.class);
         User user = mock(User.class);
         when(securitySupport.requireUser("token")).thenReturn(user);
         when(dataUploadService.sync(8L, user)).thenThrow(new IllegalStateException("sync failed"));
         DataUploadController controller =
-                new DataUploadController(securitySupport, dataUploadService, sankeyService);
+                new DataUploadController(securitySupport, dataUploadService, sankeyService, simplifiedService);
 
         assertThatThrownBy(() -> controller.sync("token", 8L))
                 .isInstanceOf(IllegalStateException.class);

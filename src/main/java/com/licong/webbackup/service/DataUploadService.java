@@ -15,6 +15,7 @@ import com.licong.webbackup.dto.upload.DataUploadSourceReviewRequest;
 import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.exception.BusinessException;
+import com.licong.webbackup.exception.WorkflowStateException;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.Font;
@@ -548,14 +549,18 @@ public class DataUploadService {
                 where.append(" AND b.uploaded_by = ?");
                 args.add(user.getUserId());
             } else if ("pendingReview".equals(normalizedScope)) {
-                where.append(" AND b.status IN (?, ?, ?)");
+                where.append(" AND b.status IN (?, ?, ?, ?, ?, ?)");
                 args.add(STATUS_PENDING_REVIEW);
                 args.add(STATUS_ENRICHMENT_REQUIRED);
                 args.add(STATUS_PENDING_APPROVAL);
+                args.add(SimplifiedDataUploadService.STATUS_READY_TO_PUBLISH);
+                args.add(SimplifiedDataUploadService.STATUS_PUBLISH_FAILED);
+                args.add(SimplifiedDataUploadService.STATUS_REVISION_REQUIRED);
             } else if ("approved".equals(normalizedScope)) {
-                where.append(" AND b.status IN (?, ?)");
+                where.append(" AND b.status IN (?, ?, ?)");
                 args.add(STATUS_APPROVED);
                 args.add(STATUS_SYNC_FAILED);
+                args.add(SimplifiedDataUploadService.STATUS_READY_TO_PUBLISH);
             }
 
             String normalizedUploaderType = normalizeFilter(uploaderType);
@@ -803,10 +808,7 @@ public class DataUploadService {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         if (!STATUS_PENDING_REVIEW.equals(batch.status())) {
-            if (STATUS_ENRICHMENT_REQUIRED.equals(batch.status())) {
-                throw new BusinessException("该提交已经完成初审");
-            }
-            throw new BusinessException("只有待初审的提交可以进入整理阶段");
+            throw new WorkflowStateException("初审要求状态 PENDING_REVIEW，实际为 " + batch.status());
         }
         String note = normalizedReviewNote(request == null ? null : request.getNote(), false);
         jdbcTemplate.update("""
@@ -836,7 +838,7 @@ public class DataUploadService {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         if (!Set.of(STATUS_ENRICHMENT_REQUIRED, STATUS_PENDING_APPROVAL).contains(batch.status())) {
-            throw new BusinessException("只有已通过初审或等待终审的批次可以上传完整整理包");
+            throw new WorkflowStateException("整理包上传状态无效，实际为 " + batch.status());
         }
 
         String fileName = validateAndNormalizeOriginalFileName(file);
@@ -952,22 +954,7 @@ public class DataUploadService {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         if (!STATUS_PENDING_APPROVAL.equals(batch.status())) {
-            if (STATUS_APPROVED.equals(batch.status())) {
-                throw new BusinessException("该批次已经审核通过");
-            }
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("已入库批次不能重复审核");
-            }
-            if (STATUS_REJECTED.equals(batch.status())) {
-                throw new BusinessException("该批次已经驳回");
-            }
-            if (STATUS_PENDING_REVIEW.equals(batch.status())) {
-                throw new BusinessException("该提交尚未完成初审和完整整理包");
-            }
-            if (STATUS_ENRICHMENT_REQUIRED.equals(batch.status())) {
-                throw new BusinessException("该提交尚未上传校验通过的完整整理包");
-            }
-            throw new BusinessException("只有等待终审的批次可以审核通过");
+            throw new WorkflowStateException("终审要求状态 PENDING_APPROVAL，实际为 " + batch.status());
         }
         if (batch.currentPackageId() == null) {
             throw new BusinessException("当前批次没有可供终审的完整整理包");
@@ -1014,13 +1001,7 @@ public class DataUploadService {
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         ensureBatchAccess(batch, user);
         if (!Set.of(STATUS_APPROVED, STATUS_SYNC_FAILED).contains(batch.status())) {
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("该批次已经同步入库");
-            }
-            if (STATUS_PENDING_REVIEW.equals(batch.status())) {
-                throw new BusinessException("该批次尚未审核通过，不能同步入库");
-            }
-            throw new BusinessException("该批次当前状态不能同步入库");
+            throw new WorkflowStateException("同步要求状态 APPROVED/SYNC_FAILED，实际为 " + batch.status());
         }
 
         List<DataUploadRowResponse> rows;
@@ -1153,7 +1134,8 @@ public class DataUploadService {
             }
             insertedRows = insertedRowsBySheet.values().stream().mapToInt(Integer::intValue).sum();
         } catch (Exception ex) {
-            throw new BusinessException("工作簿同步失败：" + ex.getMessage());
+            LOGGER.error("工作簿同步失败，uploadId={}", uploadId, ex);
+            throw new BusinessException("数据同步未完成，请稍后重试");
         }
 
         jdbcTemplate.update("""
@@ -1191,7 +1173,10 @@ public class DataUploadService {
         if (!Set.of(STATUS_APPROVED, STATUS_SYNC_FAILED).contains(batch.status())) {
             return;
         }
-        String note = truncate(message == null ? "同步失败" : message, 500);
+        String note = "数据同步未完成，请重试；如持续失败，请联系系统管理员";
+        if (message != null && !message.isBlank()) {
+            LOGGER.warn("记录批次同步失败，uploadId={}, detail={}", uploadId, truncate(message, 500));
+        }
         jdbcTemplate.update("""
                 UPDATE data_upload_batches
                 SET status = ?,
@@ -1208,16 +1193,7 @@ public class DataUploadService {
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         if (!Set.of(STATUS_PENDING_REVIEW, STATUS_ENRICHMENT_REQUIRED, STATUS_PENDING_APPROVAL)
                 .contains(batch.status())) {
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("已入库批次不能驳回");
-            }
-            if (STATUS_REJECTED.equals(batch.status())) {
-                throw new BusinessException("该批次已经驳回");
-            }
-            if (STATUS_APPROVED.equals(batch.status())) {
-                throw new BusinessException("已审核通过批次不能驳回");
-            }
-            throw new BusinessException("该批次当前状态不能退回修改");
+            throw new WorkflowStateException("退回操作状态无效，实际为 " + batch.status());
         }
         String reviewNote = normalizedReviewNote(reason, true);
         jdbcTemplate.update("""
@@ -3567,7 +3543,8 @@ public class DataUploadService {
             key = keyHolder.getKey();
         }
         if (key == null) {
-            throw new BusinessException("数据库未返回新增记录 ID");
+            LOGGER.error("数据保存后未返回新增记录 ID");
+            throw new BusinessException("数据保存未完成，请稍后重试");
         }
         return key.longValue();
     }
@@ -3709,6 +3686,8 @@ public class DataUploadService {
                 .currentPackageRows((Integer) rs.getObject("current_package_rows"))
                 .approvedPackageId((Long) rs.getObject("approved_package_id"))
                 .reviewChecklistComplete(rs.getString("review_checklist_json") != null)
+                .currentRevisionNo((Integer) rs.getObject("current_revision_no"))
+                .publishedReleaseId((Long) rs.getObject("published_release_id"))
                 .build();
     }
 
@@ -3774,7 +3753,8 @@ public class DataUploadService {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (IOException ex) {
-            throw new BusinessException("JSON 序列化失败");
+            LOGGER.error("上传数据序列化失败", ex);
+            throw new BusinessException("数据处理未完成，请稍后重试");
         }
     }
 
@@ -3828,7 +3808,8 @@ public class DataUploadService {
             populator.addScript(script);
             populator.execute(dataSource);
         } catch (Exception ex) {
-            throw new BusinessException("地图聚合刷新失败：" + ex.getMessage());
+            LOGGER.error("地图聚合刷新失败", ex);
+            throw new BusinessException("地图数据更新未完成，请稍后重试");
         }
     }
 
