@@ -43,6 +43,7 @@ public class MapVisualizationSchemaInitializer {
         ensureIndex("wastewater_plants", "idx_wastewater_plants_geo", "CREATE INDEX idx_wastewater_plants_geo ON wastewater_plants (country, province, city)");
         ensureIndex("compounds", "idx_compounds_map_filter", "CREATE INDEX idx_compounds_map_filter ON compounds (substance_category, substance_subclass, biomarker_cas)");
         seedGeoLocations();
+        deleteSpecialAdminCityStats();
     }
 
     private void ensureTables() {
@@ -212,6 +213,14 @@ public class MapVisualizationSchemaInitializer {
         if (count != null && count > 0) {
             runScript("db/map_pndl_stats_refresh_v2.sql");
         }
+    }
+
+    void deleteSpecialAdminCityStats() {
+        jdbcTemplate.update("""
+                DELETE FROM map_pndl_stats
+                WHERE level = 'city'
+                  AND geo_key IN ('china|hongkong|hongkong', 'china|aomen|macao')
+                """);
     }
 
     private void runScript(String path) {

@@ -130,6 +130,7 @@ FROM converted_rows
 JOIN geo_location_aliases ga ON ga.level = 'admin1'
   AND ga.country_key = converted_rows.country_key
   AND ga.alias_key = converted_rows.province_key
+  AND ga.geo_key NOT IN ('china|hongkong', 'china|aomen')
 JOIN geo_locations gl ON gl.level = 'city' AND gl.is_mappable = TRUE
   AND gl.parent_geo_key = ga.geo_key
   AND converted_rows.city_key <> ''
@@ -173,6 +174,7 @@ LEFT JOIN geo_locations city_location ON city_location.level = 'city'
       LOWER(REGEXP_REPLACE(COALESCE(TRIM(city_location.display_name), ''), '[^0-9a-zA-Z]+', ''))
   )
 WHERE converted_rows.country_key = 'china'
+  AND ga.geo_key NOT IN ('china|hongkong', 'china|aomen')
   AND city_location.geo_key IS NULL;
 
 ALTER TABLE map_refresh_matched

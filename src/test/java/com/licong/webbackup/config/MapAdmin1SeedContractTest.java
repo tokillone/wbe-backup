@@ -36,6 +36,7 @@ class MapAdmin1SeedContractTest {
                 .contains("UNASSIGNED_CITY")
                 .contains("CONCAT(ga.geo_key, '|__unassigned__')")
                 .contains("city_location.parent_geo_key = ga.geo_key")
+                .contains("ga.geo_key NOT IN ('china|hongkong', 'china|aomen')")
                 .contains("WHERE ga.geo_key IS NULL");
     }
 
