@@ -94,6 +94,7 @@ class Icd11SankeyServiceImplTest {
 
         assertThat(graph.getPaths()).hasSize(1);
         assertThat(graph.getPaths().get(0).getWeight()).isEqualByComparingTo("13");
+        assertThat(graph.getPaths().get(0).getMappingRows()).isEqualTo(2);
         assertThat(graph.getPaths().get(0).getShare()).isEqualByComparingTo("1");
         assertThat(graph.getStats().getTotalWeight()).isEqualByComparingTo("13");
         assertThat(graph.getStats().getMappingRows()).isEqualTo(2);

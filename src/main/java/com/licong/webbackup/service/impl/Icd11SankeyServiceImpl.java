@@ -219,6 +219,7 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
                     .biomarker(biomarker)
                     .biomarkerAliases(path.biomarkerAliases())
                     .weight(weight)
+                    .mappingRows(path.mappingRows())
                     .share(share(weight, totalWeight))
                     .nodeIds(nodeIds)
                     .build());
@@ -441,6 +442,7 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
         private final LinkedHashSet<String> substanceCategorySearchText = new LinkedHashSet<>();
         private final LinkedHashSet<String> substanceSubclassSearchText = new LinkedHashSet<>();
         private BigDecimal weight = BigDecimal.ZERO;
+        private int mappingRows;
 
         private AggregatedPath(String pathId, String level1Code, String level1, String level2Code, String level2,
                                String level3Code, String level3, String drug, String biomarker) {
@@ -457,6 +459,7 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
 
         private void add(Icd11SankeyPathRow row, BigDecimal rowWeight) {
             weight = weight.add(rowWeight);
+            mappingRows += 1;
             addValue(biomarkerAliases, row.getBiomarkerAlias());
             addValue(biomarkerAliasSearchText, row.getBiomarkerAlias());
             addValue(biomarkerCasSearchText, row.getBiomarkerCas());
@@ -507,6 +510,10 @@ public class Icd11SankeyServiceImpl implements Icd11SankeyService {
 
         private BigDecimal weight() {
             return weight;
+        }
+
+        private int mappingRows() {
+            return mappingRows;
         }
 
         private List<String> biomarkerAliases() {

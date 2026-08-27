@@ -1,6 +1,7 @@
 package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.map.MapBiomarkerOptionResponse;
+import com.licong.webbackup.dto.map.MapBiomarkerPathResponse;
 import com.licong.webbackup.dto.map.MapBiomarkerPropertyResponse;
 import com.licong.webbackup.dto.map.MapBiomarkerPropertyRow;
 import com.licong.webbackup.dto.map.MapBreakdownItemResponse;
@@ -78,6 +79,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         Map<String, LinkedHashSet<String>> categoriesByTargetClass = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> subcategoriesByCategory = new LinkedHashMap<>();
         Map<String, LinkedHashMap<String, MapBiomarkerOptionResponse>> biomarkersBySelection = new LinkedHashMap<>();
+        Map<String, MapBiomarkerPathResponse> biomarkerPathsBySelection = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> yearsBySelection = new LinkedHashMap<>();
         LinkedHashSet<String> allYears = new LinkedHashSet<>();
 
@@ -103,6 +105,18 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                             .label(valueOr(row.getBiomarkerLabel(), "全部 biomarker"))
                             .cas(row.getBiomarkerCas())
                             .build());
+            if (!ALL_CATEGORIES.equals(category) && !ALL_BIOMARKERS.equals(biomarkerKey)) {
+                biomarkerPathsBySelection.putIfAbsent(
+                        selectionKey(targetClass, category, subcategory, biomarkerKey),
+                        MapBiomarkerPathResponse.builder()
+                                .targetClass(targetClass)
+                                .category(category)
+                                .subcategory(subcategory)
+                                .biomarkerKey(biomarkerKey)
+                                .biomarkerLabel(valueOr(row.getBiomarkerLabel(), biomarkerKey))
+                                .biomarkerCas(row.getBiomarkerCas())
+                                .build());
+            }
             yearsBySelection.computeIfAbsent(selectionKey(category, subcategory, biomarkerKey), ignored -> new LinkedHashSet<>())
                     .add(year);
         }
@@ -132,6 +146,13 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         subcategoriesByCategory.forEach((key, value) -> subcategoryResponse.put(key, new ArrayList<>(value)));
         Map<String, List<MapBiomarkerOptionResponse>> biomarkerResponse = new LinkedHashMap<>();
         biomarkersBySelection.forEach((key, value) -> biomarkerResponse.put(key, new ArrayList<>(value.values())));
+        List<MapBiomarkerPathResponse> biomarkerPaths = new ArrayList<>(biomarkerPathsBySelection.values());
+        biomarkerPaths.sort(Comparator
+                .comparing((MapBiomarkerPathResponse path) -> valueOr(path.getBiomarkerLabel(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getTargetClass(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getCategory(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getSubcategory(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getBiomarkerKey(), ""), String.CASE_INSENSITIVE_ORDER));
         Map<String, List<String>> yearResponse = new LinkedHashMap<>();
         yearsBySelection.forEach((key, value) -> yearResponse.put(key, new ArrayList<>(value)));
 
@@ -163,6 +184,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .categoriesByTargetClass(categoriesByTargetClassResponse)
                 .subcategoriesByCategory(subcategoryResponse)
                 .biomarkersByCategorySubcategory(biomarkerResponse)
+                .biomarkerPaths(biomarkerPaths)
                 .yearsBySelection(yearResponse)
                 .defaultSelection(MapFilterSelectionResponse.builder()
                         .targetClass(ALL_TARGET_CLASSES)

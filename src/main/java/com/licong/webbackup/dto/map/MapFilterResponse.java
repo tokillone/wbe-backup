@@ -15,6 +15,7 @@ public class MapFilterResponse {
     private Map<String, List<String>> categoriesByTargetClass;
     private Map<String, List<String>> subcategoriesByCategory;
     private Map<String, List<MapBiomarkerOptionResponse>> biomarkersByCategorySubcategory;
+    private List<MapBiomarkerPathResponse> biomarkerPaths;
     private Map<String, List<String>> yearsBySelection;
     private MapFilterSelectionResponse defaultSelection;
     private MapDiagnosticsResponse diagnostics;

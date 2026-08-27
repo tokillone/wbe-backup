@@ -50,6 +50,35 @@ class MapVisualizationServiceImplTest {
     }
 
     @Test
+    void biomarkerPathsDeduplicateYearsExcludeAllAndKeepDuplicateMarkersOnDifferentPaths() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        when(mapper.findFilterRows()).thenReturn(List.of(
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "COTININE", "可替宁", "486-56-6", "2023"),
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "COTININE", "可替宁", "486-56-6", "2024"),
+                filterRow("人体暴露类", "生物标记物", "烟草暴露",
+                        "COTININE", "可替宁", "486-56-6", "2024"),
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "ALL", "全部 biomarker", null, "全部年份")));
+
+        MapFilterResponse filters = new MapVisualizationServiceImpl(mapper).getFilters();
+
+        assertThat(filters.getBiomarkerPaths()).hasSize(2);
+        assertThat(filters.getBiomarkerPaths())
+                .allSatisfy(path -> {
+                    assertThat(path.getBiomarkerKey()).isEqualTo("COTININE");
+                    assertThat(path.getBiomarkerLabel()).isEqualTo("可替宁");
+                    assertThat(path.getBiomarkerCas()).isEqualTo("486-56-6");
+                });
+        assertThat(filters.getBiomarkerPaths())
+                .extracting(path -> path.getTargetClass() + "|" + path.getCategory() + "|" + path.getSubcategory())
+                .containsExactlyInAnyOrder(
+                        "消费/生活方式类|烟草使用标志物|尼古丁及代谢物",
+                        "人体暴露类|生物标记物|烟草暴露");
+    }
+
+    @Test
     void allCategoryStatsUseExactAggregateWhenAvailable() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         MapRegionStatResponse exact = stat(
@@ -496,6 +525,20 @@ class MapVisualizationServiceImplTest {
         row.setBiomarkerKey("ALL");
         row.setBiomarkerLabel("全部 biomarker");
         row.setYearLabel("全部年份");
+        return row;
+    }
+
+    private MapFilterRow filterRow(String targetClass, String category, String subcategory,
+                                   String biomarkerKey, String biomarkerLabel, String biomarkerCas,
+                                   String year) {
+        MapFilterRow row = new MapFilterRow();
+        row.setTargetClass(targetClass);
+        row.setCategory(category);
+        row.setSubcategory(subcategory);
+        row.setBiomarkerKey(biomarkerKey);
+        row.setBiomarkerLabel(biomarkerLabel);
+        row.setBiomarkerCas(biomarkerCas);
+        row.setYearLabel(year);
         return row;
     }
 
