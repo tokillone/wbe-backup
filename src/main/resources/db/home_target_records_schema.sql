@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS home_target_records (
     target_group VARCHAR(20) NOT NULL COMMENT '首页目标组: drug/consumer',
     substance_category VARCHAR(100) NOT NULL COMMENT '目标物质类别',
     substance_subclass VARCHAR(100) NOT NULL COMMENT '目标物质子类',
+    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
     biomarker_name VARCHAR(300) NOT NULL COMMENT '生物标记物名称',
     source_sheet VARCHAR(64) NOT NULL DEFAULT '数据表',
     source_row_number INT NOT NULL COMMENT 'Excel 原始行号',

@@ -1,6 +1,7 @@
 package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.map.MapBiomarkerOptionResponse;
+import com.licong.webbackup.dto.map.MapBiomarkerPathResponse;
 import com.licong.webbackup.dto.map.MapBiomarkerPropertyResponse;
 import com.licong.webbackup.dto.map.MapBiomarkerPropertyRow;
 import com.licong.webbackup.dto.map.MapBreakdownItemResponse;
@@ -18,6 +19,8 @@ import com.licong.webbackup.dto.map.MapPndlComparisonResponse;
 import com.licong.webbackup.dto.map.MapPndlRankingItemResponse;
 import com.licong.webbackup.dto.map.MapPropertyValueResponse;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
+import com.licong.webbackup.dto.map.MapReportedSiteResponse;
+import com.licong.webbackup.dto.map.MapSiteLinkQcResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapStatsResponse;
 import com.licong.webbackup.dto.map.MapSummaryCardResponse;
@@ -76,6 +79,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         Map<String, LinkedHashSet<String>> categoriesByTargetClass = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> subcategoriesByCategory = new LinkedHashMap<>();
         Map<String, LinkedHashMap<String, MapBiomarkerOptionResponse>> biomarkersBySelection = new LinkedHashMap<>();
+        Map<String, MapBiomarkerPathResponse> biomarkerPathsBySelection = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> yearsBySelection = new LinkedHashMap<>();
         LinkedHashSet<String> allYears = new LinkedHashSet<>();
 
@@ -101,6 +105,18 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                             .label(valueOr(row.getBiomarkerLabel(), "全部 biomarker"))
                             .cas(row.getBiomarkerCas())
                             .build());
+            if (!ALL_CATEGORIES.equals(category) && !ALL_BIOMARKERS.equals(biomarkerKey)) {
+                biomarkerPathsBySelection.putIfAbsent(
+                        selectionKey(targetClass, category, subcategory, biomarkerKey),
+                        MapBiomarkerPathResponse.builder()
+                                .targetClass(targetClass)
+                                .category(category)
+                                .subcategory(subcategory)
+                                .biomarkerKey(biomarkerKey)
+                                .biomarkerLabel(valueOr(row.getBiomarkerLabel(), biomarkerKey))
+                                .biomarkerCas(row.getBiomarkerCas())
+                                .build());
+            }
             yearsBySelection.computeIfAbsent(selectionKey(category, subcategory, biomarkerKey), ignored -> new LinkedHashSet<>())
                     .add(year);
         }
@@ -130,6 +146,13 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         subcategoriesByCategory.forEach((key, value) -> subcategoryResponse.put(key, new ArrayList<>(value)));
         Map<String, List<MapBiomarkerOptionResponse>> biomarkerResponse = new LinkedHashMap<>();
         biomarkersBySelection.forEach((key, value) -> biomarkerResponse.put(key, new ArrayList<>(value.values())));
+        List<MapBiomarkerPathResponse> biomarkerPaths = new ArrayList<>(biomarkerPathsBySelection.values());
+        biomarkerPaths.sort(Comparator
+                .comparing((MapBiomarkerPathResponse path) -> valueOr(path.getBiomarkerLabel(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getTargetClass(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getCategory(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getSubcategory(), ""), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(path -> valueOr(path.getBiomarkerKey(), ""), String.CASE_INSENSITIVE_ORDER));
         Map<String, List<String>> yearResponse = new LinkedHashMap<>();
         yearsBySelection.forEach((key, value) -> yearResponse.put(key, new ArrayList<>(value)));
 
@@ -161,6 +184,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .categoriesByTargetClass(categoriesByTargetClassResponse)
                 .subcategoriesByCategory(subcategoryResponse)
                 .biomarkersByCategorySubcategory(biomarkerResponse)
+                .biomarkerPaths(biomarkerPaths)
                 .yearsBySelection(yearResponse)
                 .defaultSelection(MapFilterSelectionResponse.builder()
                         .targetClass(ALL_TARGET_CLASSES)
@@ -169,7 +193,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                         .biomarkerKey(defaultBiomarker)
                         .year(defaultYear)
                         .build())
-                .diagnostics(buildDiagnostics(rows.isEmpty() ? "地图筛选项为空，请确认聚合表已刷新且存在可映射的 PNDL 数据。" : null))
+                .diagnostics(rows.isEmpty()
+                        ? buildDiagnostics("地图筛选项为空，请确认聚合表已刷新且存在可映射的 PNDL 数据。")
+                        : null)
                 .build();
     }
 
@@ -184,6 +210,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLevels);
+        regions.forEach(this::applyPointCountMetadata);
         List<MapRegionStatResponse> points = regions.stream()
                 .filter(row -> row.getLatitude() != null && row.getLongitude() != null)
                 .toList();
@@ -193,7 +220,9 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .summary(buildSummary(regions, points))
                 .regions(regions)
                 .points(points)
-                .diagnostics(buildDiagnostics(regions.isEmpty() ? "当前筛选没有可映射的 PNDL 聚合结果。" : null))
+                .diagnostics(regions.isEmpty()
+                        ? buildDiagnostics("当前筛选没有可映射的 PNDL 聚合结果。")
+                        : null)
                 .build();
     }
 
@@ -210,6 +239,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getSubcategory(),
                 selection.getBiomarkerKey(),
                 selection.getYear());
+        applyPointCountMetadata(region);
         MapClusterLocationRequest location = clusterLocation(normalizedLevel, geoKey);
         List<MapSourceRecordResponse> sources = mapVisualizationMapper.findSourceRecords(
                 normalizedLevel,
@@ -249,6 +279,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                     .categoryBreakdown(List.of())
                     .sources(List.of())
                     .sourceRecords(List.of())
+                    .reportedSites(List.of())
                     .build();
         }
         List<MapRegionStatResponse> regions = mapVisualizationMapper.findRegionsByKeys(
@@ -258,6 +289,7 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 selection.getBiomarkerKey(),
                 selection.getYear(),
                 requestedLocations);
+        regions.forEach(this::applyPointCountMetadata);
         List<MapSourceRecordResponse> sources = collectSourceRecords(
                 requestedLocations,
                 selection,
@@ -304,6 +336,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         List<MapBiomarkerPropertyResponse> biomarkerProperties = cluster || region == null
                 ? List.of()
                 : buildBiomarkerProperties(region, selection);
+        List<MapReportedSiteResponse> reportedSites = cluster || region == null
+                ? List.of()
+                : mapVisualizationMapper.findRegionSites(
+                        region.getLevel(), region.getGeoKey(), selection.getCategory(),
+                        selection.getTargetClass(), selection.getSubcategory(),
+                        selection.getBiomarkerKey(), selection.getYear(), 500);
         String coverageYearRange = cluster || region == null
                 ? null
                 : mapVisualizationMapper.findCoverageYearRange(
@@ -328,7 +366,52 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 .categoryBreakdown(categoryBreakdown)
                 .sources(safeSources)
                 .sourceRecords(safeSources)
+                .reportedSites(reportedSites)
                 .build();
+    }
+
+    @Override
+    public List<MapReportedSiteResponse> getRegionSites(String level,
+                                                        String geoKey,
+                                                        String targetClass,
+                                                        String category,
+                                                        String subcategory,
+                                                        String biomarkerKey,
+                                                        String year) {
+        String normalizedLevel = normalizeLevel(level);
+        MapFilterSelectionResponse selection = normalizeSelection(
+                targetClass, category, subcategory, biomarkerKey, year);
+        return mapVisualizationMapper.findRegionSites(
+                normalizedLevel, geoKey, selection.getCategory(), selection.getTargetClass(),
+                selection.getSubcategory(), selection.getBiomarkerKey(), selection.getYear(), 500);
+    }
+
+    @Override
+    public MapSiteLinkQcResponse getSiteLinkQc() {
+        MapSiteLinkQcResponse qc = mapVisualizationMapper.findLatestSiteLinkQc();
+        if (qc == null) return null;
+        qc.setPointCountBasis("reported_site_key");
+        Map<String, Long> statuses = new LinkedHashMap<>();
+        statuses.put("精确关联", valueOrZero(qc.getExactRecords()));
+        statuses.put("一条记录关联多个点位", valueOrZero(qc.getMultiSiteRecords()));
+        statuses.put("位置字段回退匹配", valueOrZero(qc.getLocationFallbackRecords()));
+        statuses.put("关联记录不计数", valueOrZero(qc.getExcludedRecords()));
+        statuses.put("未匹配国家", valueOrZero(qc.getUnmatchedCountryRecords()));
+        statuses.put("未匹配", valueOrZero(qc.getUnmatchedRecords()));
+        qc.setMatchStatusCounts(statuses);
+        qc.setUnmappedSiteRows(mapVisualizationMapper.findUnmappedSites(qc.getUploadId()));
+        return qc;
+    }
+
+    private long valueOrZero(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private void applyPointCountMetadata(MapRegionStatResponse region) {
+        if (region == null) return;
+        region.setPointCountBasis("reported_site_key");
+        region.setCrossDocumentMergeEnabled(false);
+        region.setPointGeometryBasis("region_centroid");
     }
 
     private List<MapSourceRecordResponse> collectSourceRecords(List<MapClusterLocationRequest> locations,
@@ -496,6 +579,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 }
             }
             case "admin1" -> {
+                if (isUnassignedRegion(region.getGeoKey())) {
+                    addComparison(comparisons, "country", "国家横向比较", "country",
+                            null, null, "country|" + countryKey, true,
+                            "未定位省州数据采用所属国家的国家层面 PNDL 横向比较", selection);
+                    break;
+                }
                 addComparison(comparisons, "admin1", inChina ? "中国省份横向比较" : "同国省/州比较",
                         "admin1", countryKey, null, currentRegionId, true,
                         "同一国家省/州层面 PNDL 横向比较", selection);
@@ -509,6 +598,12 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
                 }
             }
             case "city" -> {
+                if (isUnassignedRegion(region.getGeoKey())) {
+                    addComparison(comparisons, "admin1", "所属省/州比较", "admin1",
+                            countryKey, null, "admin1|" + parentKey, true,
+                            "未定位城市数据采用所属省/州层面 PNDL 横向比较", selection);
+                    break;
+                }
                 addComparison(comparisons, "city", inChina ? "中国城市横向比较" : "城市横向比较",
                         "city", inChina ? countryKey : null, null, currentRegionId, true,
                         "城市层面 PNDL 横向比较", selection);
@@ -525,6 +620,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
             }
         }
         return comparisons;
+    }
+
+    private boolean isUnassignedRegion(String geoKey) {
+        return StringUtils.hasText(geoKey) && geoKey.endsWith("|__unassigned__");
     }
 
     private void addComparison(List<MapPndlComparisonResponse> comparisons,
@@ -837,9 +936,10 @@ public class MapVisualizationServiceImpl implements MapVisualizationService {
         if (region == null || region.getLevel() == null) {
             return "位置未识别";
         }
+        boolean unassigned = isUnassignedRegion(region.getGeoKey());
         return switch (region.getLevel()) {
-            case "city" -> "城市级位置";
-            case "admin1" -> "省州级位置";
+            case "city" -> unassigned ? "未定位到城市" : "城市级位置";
+            case "admin1" -> unassigned ? "未定位到省州" : "省州级位置";
             default -> "国家级位置";
         };
     }

@@ -38,4 +38,7 @@ public class MapRegionStatResponse {
     private Long pndlPointCount;
     private Long pndlYearCount;
     private String pndlSources;
+    private String pointCountBasis;
+    private Boolean crossDocumentMergeEnabled;
+    private String pointGeometryBasis;
 }

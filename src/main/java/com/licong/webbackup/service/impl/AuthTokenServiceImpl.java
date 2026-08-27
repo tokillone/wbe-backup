@@ -4,31 +4,35 @@ import com.licong.webbackup.entity.User;
 import com.licong.webbackup.exception.BusinessException;
 import com.licong.webbackup.mapper.UserMapper;
 import com.licong.webbackup.service.AuthTokenService;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AuthTokenServiceImpl implements AuthTokenService {
 
     private static final Duration TOKEN_TTL = Duration.ofHours(12);
+    private static final String SESSION_KEY_PREFIX = "wbe:auth:session:";
 
-    private final Map<String, TokenSession> sessions = new ConcurrentHashMap<>();
     private final UserMapper userMapper;
+    private final StringRedisTemplate redisTemplate;
+    private final RedisOperationExecutor redis;
 
-    public AuthTokenServiceImpl(UserMapper userMapper) {
+    public AuthTokenServiceImpl(UserMapper userMapper,
+                                StringRedisTemplate redisTemplate,
+                                RedisOperationExecutor redis) {
         this.userMapper = userMapper;
+        this.redisTemplate = redisTemplate;
+        this.redis = redis;
     }
 
     @Override
     public String createToken(User user) {
-        clearExpiredSessions();
         String token = UUID.randomUUID().toString().replace("-", "");
-        sessions.put(token, new TokenSession(user.getUserId(), LocalDateTime.now().plus(TOKEN_TTL)));
+        redis.execute("创建登录会话", () ->
+                redisTemplate.opsForValue().set(sessionKey(token), user.getUserId().toString(), TOKEN_TTL));
         return token;
     }
 
@@ -37,12 +41,20 @@ public class AuthTokenServiceImpl implements AuthTokenService {
         if (token == null || token.isBlank()) {
             throw new BusinessException(401, "未登录或登录状态已失效");
         }
-        TokenSession session = sessions.get(token);
-        if (session == null || session.expiresAt().isBefore(LocalDateTime.now())) {
-            sessions.remove(token);
+        String normalizedToken = token.trim();
+        String userIdValue = redis.execute("读取登录会话",
+                () -> redisTemplate.opsForValue().get(sessionKey(normalizedToken)));
+        if (userIdValue == null) {
             throw new BusinessException(401, "未登录或登录状态已失效");
         }
-        User user = userMapper.findById(session.userId());
+        Long userId;
+        try {
+            userId = Long.valueOf(userIdValue);
+        } catch (NumberFormatException ex) {
+            redis.execute("删除无效登录会话", () -> redisTemplate.delete(sessionKey(normalizedToken)));
+            throw new BusinessException(401, "未登录或登录状态已失效");
+        }
+        User user = userMapper.findById(userId);
         if (user == null || !Boolean.TRUE.equals(user.getIsActive())) {
             throw new BusinessException(401, "用户不存在或已被禁用");
         }
@@ -54,7 +66,7 @@ public class AuthTokenServiceImpl implements AuthTokenService {
         if (token == null || token.isBlank()) {
             return;
         }
-        sessions.remove(token);
+        redis.execute("退出登录", () -> redisTemplate.delete(sessionKey(token.trim())));
     }
 
     @Override
@@ -62,11 +74,7 @@ public class AuthTokenServiceImpl implements AuthTokenService {
         return TOKEN_TTL.toSeconds();
     }
 
-    private void clearExpiredSessions() {
-        LocalDateTime now = LocalDateTime.now();
-        sessions.entrySet().removeIf(entry -> entry.getValue().expiresAt().isBefore(now));
-    }
-
-    private record TokenSession(Long userId, LocalDateTime expiresAt) {
+    private String sessionKey(String token) {
+        return SESSION_KEY_PREFIX + token;
     }
 }

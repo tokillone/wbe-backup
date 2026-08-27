@@ -13,5 +13,7 @@ public class DataUploadRowsPageResponse {
     private Integer page;
     private Integer size;
     private Long total;
+    private String rowView;
+    private Long reviewPackageId;
     private List<DataUploadRowResponse> rows;
 }

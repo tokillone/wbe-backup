@@ -42,14 +42,14 @@ INSERT INTO map_pndl_stats (
 WITH source_rows AS (
     SELECT
       CASE
-        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
+        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
           THEN 'unitedsofamerica'
-        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
+        WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
           THEN 'czechia'
-        ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', ''))
+        ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', ''))
       END AS country_key,
-      LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.province), ''), '[^0-9a-zA-Z]+', '')) AS province_key,
-      LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.city), ''), '[^0-9a-zA-Z]+', '')) AS city_key,
+      LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.province), ''), '[^0-9a-zA-Z]+', '')) AS province_key,
+      LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.city), ''), '[^0-9a-zA-Z]+', '')) AS city_key,
       COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') AS target_class,
       NULLIF(TRIM(c.substance_category), '') AS category,
       COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类') AS source_subcategory,
@@ -61,12 +61,8 @@ WITH source_rows AS (
         CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
         '未标注年份'
       ) AS source_year,
-      CASE
-        WHEN NULLIF(TRIM(rs.confirmed_site_id), '') IS NOT NULL
-          THEN CONCAT('C:', TRIM(rs.confirmed_site_id))
-        ELSE CONCAT('R:', se.reported_site_key)
-      END AS site_identity_key,
-      wp.city AS source_city,
+      b.effective_site_key AS site_identity_key,
+      rs.city AS source_city,
       c.doi,
       m.measurement_id,
       m.plot_pndl_value AS raw_pndl_value,
@@ -79,8 +75,10 @@ WITH source_rows AS (
     FROM measurements m
     JOIN compounds c ON c.compound_id = m.compound_id
     JOIN sampling_events se ON se.event_id = m.event_id
-    JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-    JOIN reported_sites rs ON rs.reported_site_key = se.reported_site_key
+    JOIN record_site_bridge b ON b.measurement_id = m.measurement_id
+      AND b.effective_site_key IS NOT NULL
+    JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+      AND rs.include_in_point_count = TRUE
     WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
 ),
 converted_rows AS (
@@ -216,9 +214,42 @@ expanded AS (
     SELECT *, 'ALL', '全部目标物质类别', '全部小类', 'ALL', '全部 biomarker', NULL, '全部年份'
     FROM matched_rows
 ),
-ranked AS (
+expanded_with_association_rank AS (
     SELECT
       expanded.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY level, geo_key, agg_target_class, agg_category, subcategory,
+          biomarker_key, biomarker_label, year_label, measurement_id
+        ORDER BY site_identity_key
+      ) AS association_rank
+    FROM expanded
+),
+point_aggregates AS (
+    SELECT
+      level AS point_level,
+      geo_key AS point_geo_key,
+      agg_target_class AS point_target_class,
+      agg_category AS point_category,
+      subcategory AS point_subcategory,
+      biomarker_key AS point_biomarker_key,
+      biomarker_label AS point_biomarker_label,
+      year_label AS point_year_label,
+      COUNT(DISTINCT site_identity_key) AS point_count,
+      COUNT(DISTINCT CASE
+        WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN site_identity_key
+      END) AS pndl_point_count
+    FROM expanded
+    GROUP BY level, geo_key, agg_target_class, agg_category, subcategory,
+      biomarker_key, biomarker_label, year_label
+),
+observation_rows AS (
+    SELECT *
+    FROM expanded_with_association_rank
+    WHERE association_rank = 1
+),
+ranked AS (
+    SELECT
+      observation_rows.*,
       ROW_NUMBER() OVER (
         PARTITION BY level, geo_key, agg_target_class, agg_category, subcategory,
           biomarker_key, biomarker_label, year_label
@@ -231,7 +262,7 @@ ranked AS (
         PARTITION BY level, geo_key, agg_target_class, agg_category, subcategory,
           biomarker_key, biomarker_label, year_label
       ) AS pndl_value_count
-    FROM expanded
+    FROM observation_rows
 )
 SELECT
     level,
@@ -272,16 +303,25 @@ SELECT
     COUNT(DISTINCT NULLIF(TRIM(doi), '')) AS doi_count,
     COUNT(DISTINCT CASE WHEN source_year <> '未标注年份' THEN source_year END) AS year_count,
     COUNT(DISTINCT NULLIF(TRIM(source_city), '')) AS city_count,
-    COUNT(DISTINCT site_identity_key) AS point_count,
+    MAX(point_aggregates.point_count) AS point_count,
     COUNT(DISTINCT source_biomarker_key) AS biomarker_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN measurement_id END) AS pndl_record_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN NULLIF(TRIM(doi), '') END) AS pndl_doi_count,
-    COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 THEN site_identity_key END) AS pndl_point_count,
+    MAX(point_aggregates.pndl_point_count) AS pndl_point_count,
     COUNT(DISTINCT CASE WHEN biomarker_key <> 'ALL' AND pndl_mg_d_1000inh > 0 AND source_year <> '未标注年份' THEN source_year END) AS pndl_year_count,
     GROUP_CONCAT(DISTINCT pndl_source ORDER BY pndl_source SEPARATOR '、') AS pndl_sources,
     TRUE AS is_mappable,
     NOW() AS refreshed_at
 FROM ranked
+JOIN point_aggregates
+  ON point_aggregates.point_level = ranked.level
+ AND point_aggregates.point_geo_key = ranked.geo_key
+ AND point_aggregates.point_target_class = ranked.agg_target_class
+ AND point_aggregates.point_category = ranked.agg_category
+ AND point_aggregates.point_subcategory = ranked.subcategory
+ AND point_aggregates.point_biomarker_key = ranked.biomarker_key
+ AND point_aggregates.point_biomarker_label = ranked.biomarker_label
+ AND point_aggregates.point_year_label = ranked.year_label
 GROUP BY
     level,
     geo_key,

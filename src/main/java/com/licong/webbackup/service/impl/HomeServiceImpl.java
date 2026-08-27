@@ -1,14 +1,21 @@
 package com.licong.webbackup.service.impl;
 
 import com.licong.webbackup.dto.BiomarkerFrequencyResponse;
+import com.licong.webbackup.dto.BiomarkerSubclassResponse;
+import com.licong.webbackup.dto.BiomarkerTrendPointResponse;
 import com.licong.webbackup.dto.HomeOverviewResponse;
+import com.licong.webbackup.dto.HomeSubclassRow;
+import com.licong.webbackup.dto.HomeTrendRow;
 import com.licong.webbackup.dto.TargetCategoryOptionResponse;
 import com.licong.webbackup.mapper.HomeMapper;
 import com.licong.webbackup.service.HomeService;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 public class HomeServiceImpl implements HomeService {
@@ -34,16 +41,63 @@ public class HomeServiceImpl implements HomeService {
         List<BiomarkerFrequencyResponse> biomarkers =
                 homeMapper.findTopBiomarkerFrequencies(normalizedTargetGroup, normalizedTargetCategory,
                         normalizedLimit, normalizedMinFrequency);
-        biomarkers.forEach(biomarker -> {
-            biomarker.setSubclassOptions(homeMapper.findCategorySubclasses(normalizedTargetGroup,
-                    normalizedTargetCategory, biomarker.getName()));
-            biomarker.setTrend(homeMapper.findCategoryBiomarkers(normalizedTargetGroup,
-                    normalizedTargetCategory, biomarker.getName()));
-        });
+        populateBiomarkerDetails(biomarkers, normalizedTargetGroup, normalizedTargetCategory);
         return HomeOverviewResponse.builder()
                 .biomarkerFrequencies(biomarkers)
                 .targetCategoryOptions(buildTargetCategoryOptions())
                 .build();
+    }
+
+    private void populateBiomarkerDetails(List<BiomarkerFrequencyResponse> biomarkers,
+                                          String targetGroup,
+                                          String targetCategory) {
+        if (biomarkers.isEmpty()) {
+            return;
+        }
+        List<String> categoryNames = biomarkers.stream()
+                .map(BiomarkerFrequencyResponse::getName)
+                .toList();
+        Map<String, List<BiomarkerSubclassResponse>> subclassesByCategory =
+                groupSubclasses(homeMapper.findCategorySubclasses(targetGroup, targetCategory, categoryNames));
+        Map<String, List<BiomarkerTrendPointResponse>> trendsByCategory =
+                groupTrends(homeMapper.findCategoryBiomarkers(targetGroup, targetCategory, categoryNames));
+
+        biomarkers.forEach(biomarker -> {
+            biomarker.setSubclassOptions(subclassesByCategory.getOrDefault(biomarker.getName(), List.of()));
+            biomarker.setTrend(trendsByCategory.getOrDefault(biomarker.getName(), List.of()));
+        });
+    }
+
+    private Map<String, List<BiomarkerSubclassResponse>> groupSubclasses(List<HomeSubclassRow> rows) {
+        return rows.stream().collect(Collectors.groupingBy(
+                HomeSubclassRow::getCategoryName,
+                LinkedHashMap::new,
+                Collectors.mapping(this::toSubclassResponse, Collectors.toList())
+        ));
+    }
+
+    private Map<String, List<BiomarkerTrendPointResponse>> groupTrends(List<HomeTrendRow> rows) {
+        return rows.stream().collect(Collectors.groupingBy(
+                HomeTrendRow::getCategoryName,
+                LinkedHashMap::new,
+                Collectors.mapping(this::toTrendResponse, Collectors.toList())
+        ));
+    }
+
+    private BiomarkerSubclassResponse toSubclassResponse(HomeSubclassRow row) {
+        BiomarkerSubclassResponse response = new BiomarkerSubclassResponse();
+        response.setName(row.getName());
+        response.setFrequency(row.getFrequency());
+        response.setBiomarkerCount(row.getBiomarkerCount());
+        return response;
+    }
+
+    private BiomarkerTrendPointResponse toTrendResponse(HomeTrendRow row) {
+        BiomarkerTrendPointResponse response = new BiomarkerTrendPointResponse();
+        response.setPeriod(row.getPeriod());
+        response.setSubclass(row.getSubclass());
+        response.setFrequency(row.getFrequency());
+        return response;
     }
 
     private int normalizeLimit(Integer limit) {

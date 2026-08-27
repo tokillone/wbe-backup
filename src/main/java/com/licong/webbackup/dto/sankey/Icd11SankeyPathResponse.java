@@ -18,6 +18,7 @@ public class Icd11SankeyPathResponse {
     private String biomarker;
     private List<String> biomarkerAliases;
     private BigDecimal weight;
+    private Integer mappingRows;
     private BigDecimal share;
     private List<String> nodeIds;
 }

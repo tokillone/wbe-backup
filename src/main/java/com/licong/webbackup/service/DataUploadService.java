@@ -2,15 +2,20 @@ package com.licong.webbackup.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.licong.webbackup.config.DataUploadStorageProperties;
 import com.licong.webbackup.dto.upload.DataUploadBatchPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadBatchResponse;
 import com.licong.webbackup.dto.upload.DataUploadPreviewResponse;
+import com.licong.webbackup.dto.upload.DataUploadReviewDecisionRequest;
+import com.licong.webbackup.dto.upload.DataUploadReviewPackageResponse;
 import com.licong.webbackup.dto.upload.DataUploadRowResponse;
 import com.licong.webbackup.dto.upload.DataUploadRowsPageResponse;
 import com.licong.webbackup.dto.upload.DataUploadSheetSummaryResponse;
+import com.licong.webbackup.dto.upload.DataUploadSourceReviewRequest;
 import com.licong.webbackup.dto.upload.DataUploadSyncResponse;
 import com.licong.webbackup.entity.User;
 import com.licong.webbackup.exception.BusinessException;
+import com.licong.webbackup.exception.WorkflowStateException;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.Font;
@@ -23,6 +28,8 @@ import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.util.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,17 +39,25 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.sql.DataSource;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.PreparedStatement;
@@ -54,6 +69,7 @@ import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -69,19 +85,36 @@ import java.util.regex.Pattern;
 @Service
 public class DataUploadService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DataUploadService.class);
     private static final String DATA_SHEET_NAME = "数据表";
+    private static final String SITE_SHEET_NAME = "点位关联表";
     private static final String ICD11_SHEET_NAME = "药物疾病ICD11映射";
     private static final String LITERATURE_SHEET_NAME = "文献基础信息";
+    private static final String CORE_MARKER_SHEET_NAME = "核心标记物优先级识别";
+    private static final String METHODOLOGY_AUDIT_SHEET_NAME = "采样方法统一审计";
     private static final List<String> REQUIRED_SHEETS = List.of(
             DATA_SHEET_NAME,
+            SITE_SHEET_NAME,
             ICD11_SHEET_NAME,
             LITERATURE_SHEET_NAME
+    );
+    private static final List<String> REVIEW_PACKAGE_SHEETS = List.of(
+            DATA_SHEET_NAME,
+            CORE_MARKER_SHEET_NAME,
+            ICD11_SHEET_NAME,
+            LITERATURE_SHEET_NAME,
+            SITE_SHEET_NAME,
+            METHODOLOGY_AUDIT_SHEET_NAME
     );
     private static final int PREVIEW_LIMIT = 20;
     private static final String STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
     private static final String STATUS_PENDING_REVIEW = "PENDING_REVIEW";
+    private static final String STATUS_REVISION_REQUIRED = "REVISION_REQUIRED";
+    private static final String STATUS_ENRICHMENT_REQUIRED = "ENRICHMENT_REQUIRED";
+    private static final String STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
     private static final String STATUS_APPROVED = "APPROVED";
     private static final String STATUS_SYNCED = "SYNCED";
+    private static final String STATUS_SYNC_FAILED = "SYNC_FAILED";
     private static final String STATUS_REJECTED = "REJECTED";
     private static final String ROW_STATUS_ERROR = "ERROR";
     private static final String ROW_STATUS_WARNING = "WARNING";
@@ -122,6 +155,7 @@ public class DataUploadService {
             "目标类别",
             "目标物质类别",
             "目标物质子类",
+            "目标物质细类",
             "药物",
             "适应症",
             "处方/非处方",
@@ -188,7 +222,7 @@ public class DataUploadService {
             "点位确认依据"
     );
     public static final List<String> ICD11_HEADERS = List.of(
-            "目标类别", "目标物质类别", "目标物质子类", "药物", "适应症原文",
+            "目标类别", "目标物质类别", "目标物质子类", "目标物质细类", "药物", "适应症原文",
             "生物标记物名称", "biomarker", "规范适应症短语", "疾病实体短语",
             "ICD11_Level1_Code", "ICD11_Level1_Name", "ICD11_Level2_Code", "ICD11_Level2_Name",
             "ICD11_Level3_Code", "ICD11_Level3_Name", "映射层级", "匹配类型", "是否进入桑基图",
@@ -198,15 +232,65 @@ public class DataUploadService {
     public static final List<String> LITERATURE_HEADERS = List.of(
             "文献编号", "文献名", "DOI", "keywords", "abstract"
     );
+    public static final List<String> SITE_HEADERS = List.of(
+            "文献编号", "DOI", "国家", "省/州", "市", "原始污水厂名称", "规范污水厂名称",
+            "reported_site_key", "confirmed_site_id", "是否计入点位数", "点位说明", "同一污水厂确认依据"
+    );
+    public static final List<String> METHODOLOGY_AUDIT_HEADERS = List.of(
+            "文献编号", "数据表采样方法（原文摘录）", "规范化采样方法明细", "标准采样方法",
+            "采样主类", "采样对象", "比例方式", "采样/部署时长", "被动采样器类型",
+            "站点对应状态", "来源文件", "页码/表号/sheet", "原文证据", "影响行数",
+            "复核状态", "标准化处理说明", "备注"
+    );
+    public static final List<String> CORE_MARKER_HEADERS = List.of(
+            "序号", "目标类别_主类", "关联目标类别列表", "分类冲突标记",
+            "目标物质类别_主类", "关联目标物质类别列表", "目标物质类别冲突标记",
+            "目标物质子类_主类", "关联目标物质子类列表", "目标物质子类冲突标记",
+            "目标物质细类_主类", "关联目标物质细类列表", "目标物质细类冲突标记",
+            "代表目标物质/药物", "关联目标物质/药物列表", "生物标记物名称", "biomarker",
+            "CAS_代表值", "CAS列表", "CAS冲突标记", "原始记录数", "文献编号数",
+            "文献编号列表", "独立DOI数", "DOI列表", "DOI缺失记录数", "覆盖国家数",
+            "覆盖国家列表", "原始国家值列表", "可识别采样点位数", "空间点位ID列表",
+            "点位识别层级摘要", "无点位记录数", "覆盖年份数", "覆盖年份列表",
+            "无年份记录数", "校准系数_是否有", "校准系数值/说明列表", "校准系数记录数",
+            "GS管道衰减系数_是否有", "GS管道衰减系数值/说明列表", "GS管道衰减系数记录数",
+            "人体排泄率_是否有", "人体排泄率值/说明列表", "人体排泄率记录数",
+            "校准系数得分", "管道衰减系数得分", "证据完整度总分", "目标类别样本量",
+            "类别内文献百分位", "类别内国家百分位", "类别内点位百分位", "类别内空间覆盖百分位",
+            "类别内年份百分位", "类别内文献得分", "类别内空间得分", "类别内年份得分",
+            "目标类别内综合得分", "目标类别内排名", "目标物质类别样本量",
+            "物质类别内文献百分位", "物质类别内国家百分位", "物质类别内点位百分位",
+            "物质类别内空间覆盖百分位", "物质类别内年份百分位", "物质类别内文献得分",
+            "物质类别内空间得分", "物质类别内年份得分", "目标物质类别内综合得分",
+            "目标物质类别内排名", "二级样本提示", "目标物质子类样本量", "子类内文献百分位",
+            "子类内国家百分位", "子类内点位百分位", "子类内空间覆盖百分位", "子类内年份百分位",
+            "子类内文献得分", "子类内空间得分", "子类内年份得分", "目标物质子类内综合得分",
+            "目标物质子类内排名", "三级评价状态", "三级样本提示", "目标物质细类样本量",
+            "细类内文献百分位", "细类内国家百分位", "细类内点位百分位",
+            "细类内空间覆盖百分位", "细类内年份百分位", "细类内文献得分", "细类内空间得分",
+            "细类内年份得分", "目标物质细类内综合得分", "目标物质细类内排名",
+            "四级评价状态", "四级样本提示", "证据短板标签", "异常检查"
+    );
+    private static final List<String> LEGACY_REQUIRED_HEADERS = REQUIRED_HEADERS.stream()
+            .filter(header -> !"目标物质细类".equals(header))
+            .toList();
+    private static final List<String> LEGACY_ICD11_HEADERS = ICD11_HEADERS.stream()
+            .filter(header -> !"目标物质细类".equals(header))
+            .toList();
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final DataSource dataSource;
+    private final DataUploadStorageProperties storageProperties;
 
-    public DataUploadService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, DataSource dataSource) {
+    public DataUploadService(JdbcTemplate jdbcTemplate,
+                             ObjectMapper objectMapper,
+                             DataSource dataSource,
+                             DataUploadStorageProperties storageProperties) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.dataSource = dataSource;
+        this.storageProperties = storageProperties;
     }
 
     public void requireCanUpload(User user) {
@@ -278,8 +362,6 @@ public class DataUploadService {
             );
 
             buildDataTemplateSheet(workbook, headerStyle);
-            buildWorkbookSheetTemplate(workbook, ICD11_SHEET_NAME, ICD11_HEADERS, headerStyle);
-            buildWorkbookSheetTemplate(workbook, LITERATURE_SHEET_NAME, LITERATURE_HEADERS, headerStyle);
             buildFieldGuideSheet(workbook, titleStyle, headerStyle, bodyStyle);
             buildInstructionSheet(workbook, titleStyle, headerStyle, bodyStyle);
 
@@ -290,33 +372,53 @@ public class DataUploadService {
         }
     }
 
+    public byte[] createReviewPackageTemplate() {
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            org.apache.poi.ss.usermodel.CellStyle headerStyle = createTemplateStyle(
+                    workbook,
+                    IndexedColors.LIGHT_TURQUOISE,
+                    IndexedColors.DARK_TEAL,
+                    true,
+                    HorizontalAlignment.CENTER
+            );
+            buildDataTemplateSheet(workbook, headerStyle);
+            buildWorkbookSheetTemplate(workbook, CORE_MARKER_SHEET_NAME, CORE_MARKER_HEADERS, headerStyle);
+            buildWorkbookSheetTemplate(workbook, ICD11_SHEET_NAME, ICD11_HEADERS, headerStyle);
+            buildWorkbookSheetTemplate(workbook, LITERATURE_SHEET_NAME, LITERATURE_HEADERS, headerStyle);
+            buildWorkbookSheetTemplate(workbook, SITE_SHEET_NAME, SITE_HEADERS, headerStyle);
+            buildWorkbookSheetTemplate(workbook, METHODOLOGY_AUDIT_SHEET_NAME, METHODOLOGY_AUDIT_HEADERS, headerStyle);
+            workbook.write(output);
+            return output.toByteArray();
+        } catch (IOException ex) {
+            throw new BusinessException("生成完整整理包模板失败");
+        }
+    }
+
     @Transactional
     public DataUploadPreviewResponse preview(MultipartFile file, User user, boolean allowDuplicate) {
         requireCanUpload(user);
-        if (file == null || file.isEmpty()) {
-            throw new BusinessException("请选择需要上传的 Excel 文件");
+        String fileName = validateAndNormalizeOriginalFileName(file);
+        StagedFile stagedFile = stageUpload(file);
+        String sha256 = stagedFile.sha256();
+        String duplicateMessage;
+        try {
+            duplicateMessage = findDuplicateMessage(sha256).orElse(null);
+            if (duplicateMessage != null && !allowDuplicate) {
+                throw new BusinessException("检测到相同 SHA256 的历史上传文件，已阻止重复上传；如确需重复导入，请联系系统管理员确认放行");
+            }
+            if (duplicateMessage != null && allowDuplicate && !isAdmin(user)) {
+                throw new BusinessException(403, "只有系统管理员可以放行重复上传文件");
+            }
+        } catch (RuntimeException ex) {
+            deleteStagedFile(stagedFile);
+            throw ex;
         }
-        String fileName = Optional.ofNullable(file.getOriginalFilename()).orElse("upload.xlsx");
-        if (!fileName.toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
-            throw new BusinessException("仅支持 .xlsx 文件");
-        }
-
-        byte[] bytes = readBytes(file);
-        String sha256 = sha256(bytes);
-        String duplicateMessage = findDuplicateMessage(sha256).orElse(null);
-        if (duplicateMessage != null && !allowDuplicate) {
-            throw new BusinessException("检测到相同 SHA256 的历史上传文件，已阻止重复上传；如确需重复导入，请联系系统管理员确认放行");
-        }
-        if (duplicateMessage != null && allowDuplicate && !isAdmin(user)) {
-            throw new BusinessException(403, "只有系统管理员可以放行重复上传文件");
-        }
-        StoredFile storedFile = storeFile(bytes, fileName);
 
         ParsedWorkbook parsedWorkbook;
         try {
-            parsedWorkbook = parseWorkbook(bytes);
+            parsedWorkbook = parseSubmissionWorkbook(stagedFile.path());
         } catch (BusinessException ex) {
-            deleteStoredFile(storedFile);
+            deleteStagedFile(stagedFile);
             String failureMessage = truncate("文件解析失败：" + ex.getMessage(), 500);
             Long uploadId = insertBatch(
                     fileName,
@@ -344,8 +446,10 @@ public class DataUploadService {
                     .previewRows(List.of())
                     .sheetSummaries(List.of())
                     .previewRowsBySheet(Map.of())
+                    .requiredReviewSheets(REVIEW_PACKAGE_SHEETS)
                     .build();
         }
+        StoredFile storedFile = promoteStagedFile(stagedFile);
         List<ParsedRow> rows = parsedWorkbook.rows();
         int errorRows = (int) rows.stream().filter(ParsedRow::hasErrors).count();
         int warningRows = (int) rows.stream().filter(ParsedRow::hasWarnings).count();
@@ -375,9 +479,7 @@ public class DataUploadService {
         );
         List<DataUploadRowResponse> previewRows = new ArrayList<>();
         Map<String, List<DataUploadRowResponse>> previewRowsBySheet = new LinkedHashMap<>();
-        for (String sheetName : REQUIRED_SHEETS) {
-            previewRowsBySheet.put(sheetName, new ArrayList<>());
-        }
+        previewRowsBySheet.put(DATA_SHEET_NAME, new ArrayList<>());
         for (ParsedRow row : rows) {
             Long rowId = insertUploadRow(uploadId, row);
             DataUploadRowResponse response = toRowResponse(rowId, row, null);
@@ -390,7 +492,7 @@ public class DataUploadService {
             }
         }
 
-        List<DataUploadSheetSummaryResponse> sheetSummaries = REQUIRED_SHEETS.stream()
+        List<DataUploadSheetSummaryResponse> sheetSummaries = List.of(DATA_SHEET_NAME).stream()
                 .map(sheetName -> {
                     List<ParsedRow> sheetRows = rows.stream()
                             .filter(row -> sheetName.equals(row.sheetName()))
@@ -417,6 +519,7 @@ public class DataUploadService {
                 .previewRows(previewRows)
                 .sheetSummaries(sheetSummaries)
                 .previewRowsBySheet(previewRowsBySheet)
+                .requiredReviewSheets(REVIEW_PACKAGE_SHEETS)
                 .build();
     }
 
@@ -446,11 +549,18 @@ public class DataUploadService {
                 where.append(" AND b.uploaded_by = ?");
                 args.add(user.getUserId());
             } else if ("pendingReview".equals(normalizedScope)) {
-                where.append(" AND b.status = ?");
+                where.append(" AND b.status IN (?, ?, ?, ?, ?, ?)");
                 args.add(STATUS_PENDING_REVIEW);
+                args.add(STATUS_ENRICHMENT_REQUIRED);
+                args.add(STATUS_PENDING_APPROVAL);
+                args.add(SimplifiedDataUploadService.STATUS_READY_TO_PUBLISH);
+                args.add(SimplifiedDataUploadService.STATUS_PUBLISH_FAILED);
+                args.add(SimplifiedDataUploadService.STATUS_REVISION_REQUIRED);
             } else if ("approved".equals(normalizedScope)) {
-                where.append(" AND b.status = ?");
+                where.append(" AND b.status IN (?, ?, ?)");
                 args.add(STATUS_APPROVED);
+                args.add(STATUS_SYNC_FAILED);
+                args.add(SimplifiedDataUploadService.STATUS_READY_TO_PUBLISH);
             }
 
             String normalizedUploaderType = normalizeFilter(uploaderType);
@@ -495,7 +605,10 @@ public class DataUploadService {
                 FROM data_upload_batches b
                 JOIN users u ON u.user_id = b.uploaded_by
                 LEFT JOIN users reviewer ON reviewer.user_id = b.reviewed_by
+                LEFT JOIN users source_reviewer ON source_reviewer.user_id = b.source_reviewed_by
                 LEFT JOIN users syncer ON syncer.user_id = b.synced_by
+                LEFT JOIN data_upload_review_packages current_package
+                    ON current_package.package_id = b.current_package_id
                 """;
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) " + fromSql + where, Long.class, args.toArray());
         List<Object> pageArgs = new ArrayList<>(args);
@@ -517,9 +630,22 @@ public class DataUploadService {
                 .build();
     }
 
-    public DataUploadRowsPageResponse listRows(Long uploadId, int page, int size, String status, User user) {
+    public DataUploadBatchResponse getBatch(Long uploadId, User user) {
         requireCanViewUploads(user);
-        ensureBatchAccess(findBatchRecord(uploadId), user);
+        BatchRecord batch = findBatchRecord(uploadId);
+        ensureBatchAccess(batch, user);
+        return getBatch(uploadId);
+    }
+
+    public DataUploadRowsPageResponse listRows(Long uploadId,
+                                               int page,
+                                               int size,
+                                               String status,
+                                               String rowView,
+                                               User user) {
+        requireCanViewUploads(user);
+        BatchRecord batch = findBatchRecord(uploadId);
+        ensureBatchAccess(batch, user);
         int normalizedSize = Math.max(1, Math.min(size, 100));
         int normalizedPage = Math.max(1, page);
         int offset = (normalizedPage - 1) * normalizedSize;
@@ -528,6 +654,25 @@ public class DataUploadService {
         List<Object> args = new ArrayList<>();
         args.add(uploadId);
         String where = "WHERE upload_id = ?";
+        String normalizedRowView = normalizeFilter(rowView);
+        Long reviewPackageId = null;
+        if ("submission".equals(normalizedRowView)) {
+            where += " AND row_stage = 'SUBMISSION'";
+        } else {
+            if (!Set.of("active", "reviewPackage").contains(
+                    normalizedRowView == null ? "active" : normalizedRowView)) {
+                throw new BusinessException("行数据视图参数无效");
+            }
+            reviewPackageId = batch.currentPackageId();
+            if (reviewPackageId == null) {
+                where += " AND row_stage = 'SUBMISSION'";
+                normalizedRowView = "submission";
+            } else {
+                where += " AND row_stage = 'REVIEW_PACKAGE' AND review_package_id = ?";
+                args.add(reviewPackageId);
+                normalizedRowView = "reviewPackage";
+            }
+        }
         if (hasStatusFilter) {
             where += " AND row_status = ?";
             args.add(normalizedStatus);
@@ -544,7 +689,15 @@ public class DataUploadService {
                         SELECT *
                         FROM data_upload_rows
                         %s
-                        ORDER BY FIELD(sheet_name, '数据表', '药物疾病ICD11映射', '文献基础信息'),
+                        ORDER BY CASE sheet_name
+                                     WHEN '数据表' THEN 1
+                                     WHEN '点位关联表' THEN 2
+                                     WHEN '药物疾病ICD11映射' THEN 3
+                                     WHEN '文献基础信息' THEN 4
+                                     WHEN '采样方法统一审计' THEN 5
+                                     WHEN '核心标记物优先级识别' THEN 6
+                                     ELSE 7
+                                 END,
                                  excel_row_number ASC
                         LIMIT ? OFFSET ?
                         """.formatted(where),
@@ -556,6 +709,8 @@ public class DataUploadService {
                 .page(normalizedPage)
                 .size(normalizedSize)
                 .total(total == null ? 0L : total)
+                .rowView(normalizedRowView)
+                .reviewPackageId(reviewPackageId)
                 .rows(rows)
                 .build();
     }
@@ -570,10 +725,14 @@ public class DataUploadService {
         if (batch.storedFilePath() == null || batch.storedFilePath().isBlank()) {
             throw new BusinessException("原始文件不存在");
         }
-        Path path = Path.of(batch.storedFilePath());
-        if (!Files.exists(path)) {
+        Path path = resolveStoredFilePath(batch.storedFilePath());
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new BusinessException("原始文件已被移除");
         }
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new BusinessException("原始文件路径无效");
+        }
+        ensureRealPathWithinManagedRoots(path);
         return path;
     }
 
@@ -584,39 +743,255 @@ public class DataUploadService {
         }
         BatchRecord batch = findBatchRecord(uploadId);
         ensureBatchAccess(batch, user);
-        return batch.fileName();
+        return safeDownloadFileName(batch.fileName());
+    }
+
+    public List<DataUploadReviewPackageResponse> listReviewPackages(Long uploadId, User user) {
+        requireCanViewUploads(user);
+        ensureBatchAccess(findBatchRecord(uploadId), user);
+        List<Long> packageIds = jdbcTemplate.query("""
+                        SELECT package_id
+                        FROM data_upload_review_packages
+                        WHERE upload_id = ?
+                        ORDER BY version_no DESC
+                        """,
+                (rs, rowNum) -> rs.getLong("package_id"),
+                uploadId
+        );
+        return packageIds.stream().map(this::getReviewPackage).toList();
+    }
+
+    public Path getReviewPackageFile(Long uploadId, Long packageId, User user) {
+        requireCanViewUploads(user);
+        if (!isAdmin(user) && Boolean.FALSE.equals(user.getCanDownload())) {
+            throw new BusinessException(403, "当前账号已被禁止下载文件");
+        }
+        ensureBatchAccess(findBatchRecord(uploadId), user);
+        String storedPath = queryOptionalString("""
+                SELECT stored_file_path
+                FROM data_upload_review_packages
+                WHERE package_id = ? AND upload_id = ?
+                """, packageId, uploadId);
+        if (storedPath == null || storedPath.isBlank()) {
+            throw new BusinessException("完整整理包原文件不存在");
+        }
+        Path path = resolveStoredFilePath(storedPath);
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new BusinessException("完整整理包原文件已被移除");
+        }
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new BusinessException("完整整理包原文件路径无效");
+        }
+        ensureRealPathWithinManagedRoots(path);
+        return path;
+    }
+
+    public String getReviewPackageFileName(Long uploadId, Long packageId, User user) {
+        requireCanViewUploads(user);
+        if (!isAdmin(user) && Boolean.FALSE.equals(user.getCanDownload())) {
+            throw new BusinessException(403, "当前账号已被禁止下载文件");
+        }
+        ensureBatchAccess(findBatchRecord(uploadId), user);
+        String fileName = queryOptionalString("""
+                SELECT file_name
+                FROM data_upload_review_packages
+                WHERE package_id = ? AND upload_id = ?
+                """, packageId, uploadId);
+        if (fileName == null) throw new BusinessException("完整整理包不存在");
+        return safeDownloadFileName(fileName);
     }
 
     @Transactional
-    public DataUploadBatchResponse approve(Long uploadId, User user) {
+    public DataUploadBatchResponse acceptSourceReview(Long uploadId,
+                                                      User user,
+                                                      DataUploadSourceReviewRequest request) {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         if (!STATUS_PENDING_REVIEW.equals(batch.status())) {
-            if (STATUS_APPROVED.equals(batch.status())) {
-                throw new BusinessException("该批次已经审核通过");
-            }
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("已入库批次不能重复审核");
-            }
-            if (STATUS_REJECTED.equals(batch.status())) {
-                throw new BusinessException("该批次已经驳回");
-            }
-            throw new BusinessException("只有待审核批次可以审核通过");
+            throw new WorkflowStateException("初审要求状态 PENDING_REVIEW，实际为 " + batch.status());
         }
+        String note = normalizedReviewNote(request == null ? null : request.getNote(), false);
+        jdbcTemplate.update("""
+                        UPDATE data_upload_batches
+                        SET status = ?,
+                            source_reviewed_by = ?,
+                            source_reviewed_at = NOW(),
+                            source_review_note = ?,
+                            review_action = 'SOURCE_ACCEPTED'
+                        WHERE upload_id = ?
+                        """,
+                STATUS_ENRICHMENT_REQUIRED,
+                user.getUserId(),
+                note,
+                uploadId
+        );
+        insertAuditEvent(uploadId, null, "SOURCE_ACCEPTED", user.getUserId(),
+                batch.status(), STATUS_ENRICHMENT_REQUIRED, note, null);
+        return getBatch(uploadId);
+    }
+
+    @Transactional
+    public DataUploadReviewPackageResponse uploadReviewPackage(Long uploadId,
+                                                               MultipartFile file,
+                                                               User user,
+                                                               boolean allowDuplicate) {
+        requireCanReviewUploads(user);
+        BatchRecord batch = findBatchRecordForUpdate(uploadId);
+        if (!Set.of(STATUS_ENRICHMENT_REQUIRED, STATUS_PENDING_APPROVAL).contains(batch.status())) {
+            throw new WorkflowStateException("整理包上传状态无效，实际为 " + batch.status());
+        }
+
+        String fileName = validateAndNormalizeOriginalFileName(file);
+        StagedFile stagedFile = stageUpload(file);
+        String sha256 = stagedFile.sha256();
+        try {
+            Integer duplicateCount = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*)
+                    FROM data_upload_review_packages
+                    WHERE upload_id = ? AND sha256 = ?
+                    """, Integer.class, uploadId, sha256);
+            if (duplicateCount != null && duplicateCount > 0 && !allowDuplicate) {
+                throw new BusinessException("该批次已经上传过内容完全相同的完整整理包");
+            }
+            if (duplicateCount != null && duplicateCount > 0 && allowDuplicate && !isAdmin(user)) {
+                throw new BusinessException(403, "只有系统管理员可以放行重复的完整整理包");
+            }
+        } catch (RuntimeException ex) {
+            deleteStagedFile(stagedFile);
+            throw ex;
+        }
+
+        int versionNo = nextReviewPackageVersion(uploadId);
+        ParsedWorkbook parsedWorkbook;
+        try {
+            parsedWorkbook = parseReviewPackage(stagedFile.path());
+        } catch (BusinessException ex) {
+            deleteStagedFile(stagedFile);
+            String message = truncate("文件解析失败：" + ex.getMessage(), 500);
+            Long packageId = insertReviewPackage(
+                    uploadId, versionNo, fileName, null, sha256, user.getUserId(),
+                    STATUS_VALIDATION_FAILED, 0, 0, 1, 0, List.of(message), Map.of()
+            );
+            insertAuditEvent(uploadId, packageId, "REVIEW_PACKAGE_VALIDATION_FAILED", user.getUserId(),
+                    batch.status(), batch.status(), message, null);
+            return getReviewPackage(packageId);
+        }
+
+        List<String> headerErrors = new ArrayList<>(parsedWorkbook.headerErrors());
+        List<ParsedRow> rows = parsedWorkbook.rows();
+        try {
+            validateSubmissionCoverage(uploadId, rows, headerErrors);
+        } catch (RuntimeException ex) {
+            deleteStagedFile(stagedFile);
+            throw ex;
+        }
+        int errorRows = (int) rows.stream().filter(ParsedRow::hasErrors).count();
+        int warningRows = (int) rows.stream().filter(ParsedRow::hasWarnings).count();
+        int validRows = rows.size() - errorRows;
+        String packageStatus = headerErrors.isEmpty() && errorRows == 0
+                ? "VALID"
+                : STATUS_VALIDATION_FAILED;
+
+        StoredFile storedFile = promoteStagedFile(stagedFile);
+        try {
+            Map<String, Object> diffSummary = buildProductionDiffSummary(rows);
+            Long packageId = insertReviewPackage(
+                    uploadId,
+                    versionNo,
+                    fileName,
+                    storedFile.path().toString(),
+                    sha256,
+                    user.getUserId(),
+                    packageStatus,
+                    rows.size(),
+                    validRows,
+                    errorRows,
+                    warningRows,
+                    headerErrors,
+                    diffSummary
+            );
+            for (ParsedRow row : rows) {
+                insertReviewPackageRow(uploadId, packageId, row);
+            }
+
+            if ("VALID".equals(packageStatus)) {
+                jdbcTemplate.update("""
+                                UPDATE data_upload_batches
+                                SET status = ?,
+                                    current_package_id = ?,
+                                    approved_package_id = NULL,
+                                    review_checklist_json = NULL,
+                                    review_diff_json = ?
+                                WHERE upload_id = ?
+                                """,
+                        STATUS_PENDING_APPROVAL,
+                        packageId,
+                        toJson(diffSummary),
+                        uploadId
+                );
+            }
+            insertAuditEvent(
+                    uploadId,
+                    packageId,
+                    "VALID".equals(packageStatus) ? "REVIEW_PACKAGE_ACCEPTED" : "REVIEW_PACKAGE_VALIDATION_FAILED",
+                    user.getUserId(),
+                    batch.status(),
+                    "VALID".equals(packageStatus) ? STATUS_PENDING_APPROVAL : batch.status(),
+                    headerErrors.isEmpty() ? null : truncate(String.join("；", headerErrors), 500),
+                    diffSummary
+            );
+            return getReviewPackage(packageId);
+        } catch (RuntimeException ex) {
+            deletePathQuietly(storedFile.path());
+            throw ex;
+        }
+    }
+
+    @Transactional
+    public DataUploadBatchResponse approve(Long uploadId,
+                                           User user,
+                                           DataUploadReviewDecisionRequest request) {
+        requireCanReviewUploads(user);
+        BatchRecord batch = findBatchRecordForUpdate(uploadId);
+        if (!STATUS_PENDING_APPROVAL.equals(batch.status())) {
+            throw new WorkflowStateException("终审要求状态 PENDING_APPROVAL，实际为 " + batch.status());
+        }
+        if (batch.currentPackageId() == null) {
+            throw new BusinessException("当前批次没有可供终审的完整整理包");
+        }
+        if (request == null || !request.allConfirmed()) {
+            throw new BusinessException("请完成全部八项终审检查后再审核通过");
+        }
+        String diffJson = queryOptionalString("""
+                SELECT diff_json
+                FROM data_upload_review_packages
+                WHERE package_id = ? AND upload_id = ?
+                """, batch.currentPackageId(), uploadId);
+        Map<String, Object> diffSummary = fromJsonObject(diffJson);
+        if ("HIGH".equals(diffSummary.get("riskLevel")) && !isAdmin(user)) {
+            throw new BusinessException(403, "生产数据存在大幅减少风险，必须由系统管理员完成终审确认");
+        }
+        String note = normalizedReviewNote(request.getNote(), false);
         jdbcTemplate.update("""
                         UPDATE data_upload_batches
                         SET status = ?,
                             reviewed_by = ?,
                             reviewed_at = NOW(),
                             review_action = ?,
-                            review_note = NULL
+                            review_note = ?,
+                            approved_package_id = current_package_id,
+                            review_checklist_json = ?
                         WHERE upload_id = ?
                         """,
                 STATUS_APPROVED,
                 user.getUserId(),
                 STATUS_APPROVED,
+                note,
+                toJson(request),
                 uploadId
         );
+        insertAuditEvent(uploadId, batch.currentPackageId(), "FINAL_APPROVED", user.getUserId(),
+                batch.status(), STATUS_APPROVED, note, request);
         return getBatch(uploadId);
     }
 
@@ -625,33 +1000,65 @@ public class DataUploadService {
         requireCanSyncData(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
         ensureBatchAccess(batch, user);
-        if (!STATUS_APPROVED.equals(batch.status())) {
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("该批次已经同步入库");
-            }
-            if (STATUS_PENDING_REVIEW.equals(batch.status())) {
-                throw new BusinessException("该批次尚未审核通过，不能同步入库");
-            }
-            throw new BusinessException("该批次当前状态不能同步入库");
+        if (!Set.of(STATUS_APPROVED, STATUS_SYNC_FAILED).contains(batch.status())) {
+            throw new WorkflowStateException("同步要求状态 APPROVED/SYNC_FAILED，实际为 " + batch.status());
         }
 
-        List<DataUploadRowResponse> rows = jdbcTemplate.query("""
-                        SELECT *
-                        FROM data_upload_rows
-                        WHERE upload_id = ? AND row_status <> ?
-                        ORDER BY CASE sheet_name
-                                     WHEN '文献基础信息' THEN 1
-                                     WHEN '数据表' THEN 2
-                                     WHEN '药物疾病ICD11映射' THEN 3
-                                     ELSE 4
-                                 END,
-                                 excel_row_number ASC
-                        """,
-                rowMapper(),
-                uploadId,
-                ROW_STATUS_ERROR
-        );
-        if (rows.size() != batchTotalRows(uploadId)) {
+        List<DataUploadRowResponse> rows;
+        int expectedRows;
+        if (batch.approvedPackageId() != null) {
+            rows = jdbcTemplate.query("""
+                            SELECT *
+                            FROM data_upload_rows
+                            WHERE upload_id = ?
+                              AND review_package_id = ?
+                              AND row_stage = 'REVIEW_PACKAGE'
+                              AND row_status <> ?
+                            ORDER BY CASE sheet_name
+                                         WHEN '文献基础信息' THEN 1
+                                         WHEN '点位关联表' THEN 2
+                                         WHEN '数据表' THEN 3
+                                         WHEN '药物疾病ICD11映射' THEN 4
+                                         WHEN '采样方法统一审计' THEN 5
+                                         WHEN '核心标记物优先级识别' THEN 6
+                                         ELSE 7
+                                     END,
+                                     excel_row_number ASC
+                            """,
+                    rowMapper(),
+                    uploadId,
+                    batch.approvedPackageId(),
+                    ROW_STATUS_ERROR
+            );
+            Integer packageRows = jdbcTemplate.queryForObject("""
+                    SELECT total_rows
+                    FROM data_upload_review_packages
+                    WHERE package_id = ? AND upload_id = ? AND status = 'VALID'
+                    """, Integer.class, batch.approvedPackageId(), uploadId);
+            expectedRows = packageRows == null ? 0 : packageRows;
+        } else {
+            rows = jdbcTemplate.query("""
+                            SELECT *
+                            FROM data_upload_rows
+                            WHERE upload_id = ?
+                              AND row_stage = 'SUBMISSION'
+                              AND row_status <> ?
+                            ORDER BY CASE sheet_name
+                                         WHEN '文献基础信息' THEN 1
+                                         WHEN '点位关联表' THEN 2
+                                         WHEN '数据表' THEN 3
+                                         WHEN '药物疾病ICD11映射' THEN 4
+                                         ELSE 5
+                                     END,
+                                     excel_row_number ASC
+                            """,
+                    rowMapper(),
+                    uploadId,
+                    ROW_STATUS_ERROR
+            );
+            expectedRows = batchTotalRows(uploadId);
+        }
+        if (rows.size() != expectedRows) {
             throw new BusinessException("批次包含校验错误行，不能同步入库");
         }
 
@@ -678,13 +1085,36 @@ public class DataUploadService {
             }
             insertedRowsBySheet.put(LITERATURE_SHEET_NAME, rowsBySheet.get(LITERATURE_SHEET_NAME).size());
 
+            List<SiteLinkageMatcher.SiteRow> siteRows = new ArrayList<>();
+            for (DataUploadRowResponse row : rowsBySheet.get(SITE_SHEET_NAME)) {
+                SiteLinkageMatcher.SiteRow site = toSiteRow(row);
+                upsertWorkbookReportedSite(batch.uploadId(), row, site);
+                siteRows.add(site);
+                markSynced(row, "REPORTED_SITE", null, null);
+            }
+            insertedRowsBySheet.put(SITE_SHEET_NAME, rowsBySheet.get(SITE_SHEET_NAME).size());
+            Map<String, List<SiteLinkageMatcher.SiteRow>> sitesByLiterature = siteRows.stream()
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            site -> SiteLinkageMatcher.normalized(site.literatureCode()),
+                            LinkedHashMap::new,
+                            java.util.stream.Collectors.toList()));
+
+            List<SiteLinkageMatcher.MatchResult> siteMatches = new ArrayList<>();
             for (DataUploadRowResponse row : rowsBySheet.get(DATA_SHEET_NAME)) {
-                Long measurementId = syncSnapshotDataRow(
-                        batch.uploadId(), row, batch.reviewedBy() == null ? user.getUserId() : batch.reviewedBy());
+                Long measurementId = syncSnapshotDataRow(batch.uploadId(), row);
+                String internalRecordKey = "upload:" + batch.uploadId() + ":row:" + row.getExcelRowNumber();
+                SiteLinkageMatcher.MatchResult match = SiteLinkageMatcher.match(
+                        row.getData(),
+                        sitesByLiterature.getOrDefault(
+                                SiteLinkageMatcher.normalized(row.getData().get("文献编号")), List.of()),
+                        internalRecordKey);
+                insertRecordSiteBridge(batch.uploadId(), row, measurementId, match);
+                siteMatches.add(match);
                 insertHomeTargetRecord(row, literatureDois);
                 markSynced(row, "MEASUREMENT", measurementId, measurementId);
             }
             insertedRowsBySheet.put(DATA_SHEET_NAME, rowsBySheet.get(DATA_SHEET_NAME).size());
+            persistSiteLinkQc(batch.uploadId(), siteRows, siteMatches);
 
             for (DataUploadRowResponse row : rowsBySheet.get(ICD11_SHEET_NAME)) {
                 Long sankeyPathId = insertIcd11Mapping(batch.uploadId(), row);
@@ -692,9 +1122,20 @@ public class DataUploadService {
                 markSynced(row, "ICD11_SANKEY_PATH", sankeyPathId, null);
             }
             insertedRowsBySheet.put(ICD11_SHEET_NAME, rowsBySheet.get(ICD11_SHEET_NAME).size());
+
+            for (String evidenceSheet : List.of(METHODOLOGY_AUDIT_SHEET_NAME, CORE_MARKER_SHEET_NAME)) {
+                for (DataUploadRowResponse row : rowsBySheet.getOrDefault(evidenceSheet, List.of())) {
+                    markSynced(row, "REVIEW_EVIDENCE", null, null);
+                }
+                insertedRowsBySheet.put(
+                        evidenceSheet,
+                        rowsBySheet.getOrDefault(evidenceSheet, List.of()).size()
+                );
+            }
             insertedRows = insertedRowsBySheet.values().stream().mapToInt(Integer::intValue).sum();
         } catch (Exception ex) {
-            throw new BusinessException("工作簿同步失败：" + ex.getMessage());
+            LOGGER.error("工作簿同步失败，uploadId={}", uploadId, ex);
+            throw new BusinessException("数据同步未完成，请稍后重试");
         }
 
         jdbcTemplate.update("""
@@ -702,7 +1143,8 @@ public class DataUploadService {
                         SET status = ?,
                             synced_rows = ?,
                             synced_at = NOW(),
-                            synced_by = ?
+                            synced_by = ?,
+                            sync_error_message = NULL
                         WHERE upload_id = ?
                         """,
                 STATUS_SYNCED,
@@ -710,6 +1152,8 @@ public class DataUploadService {
                 user.getUserId(),
                 uploadId
         );
+        insertAuditEvent(uploadId, batch.approvedPackageId(), "SYNCED", user.getUserId(),
+                batch.status(), STATUS_SYNCED, null, insertedRowsBySheet);
 
         tryRefreshMapStats(syncWarnings);
         return DataUploadSyncResponse.builder()
@@ -722,28 +1166,36 @@ public class DataUploadService {
     }
 
     @Transactional
+    public void recordSyncFailure(Long uploadId, User user, String message) {
+        requireCanSyncData(user);
+        BatchRecord batch = findBatchRecordForUpdate(uploadId);
+        ensureBatchAccess(batch, user);
+        if (!Set.of(STATUS_APPROVED, STATUS_SYNC_FAILED).contains(batch.status())) {
+            return;
+        }
+        String note = "数据同步未完成，请重试；如持续失败，请联系系统管理员";
+        if (message != null && !message.isBlank()) {
+            LOGGER.warn("记录批次同步失败，uploadId={}, detail={}", uploadId, truncate(message, 500));
+        }
+        jdbcTemplate.update("""
+                UPDATE data_upload_batches
+                SET status = ?,
+                    sync_error_message = ?
+                WHERE upload_id = ?
+                """, STATUS_SYNC_FAILED, note, uploadId);
+        insertAuditEvent(uploadId, batch.approvedPackageId(), "SYNC_FAILED", user.getUserId(),
+                batch.status(), STATUS_SYNC_FAILED, note, null);
+    }
+
+    @Transactional
     public DataUploadBatchResponse reject(Long uploadId, User user, String reason) {
         requireCanReviewUploads(user);
         BatchRecord batch = findBatchRecordForUpdate(uploadId);
-        if (!STATUS_PENDING_REVIEW.equals(batch.status())) {
-            if (STATUS_SYNCED.equals(batch.status())) {
-                throw new BusinessException("已入库批次不能驳回");
-            }
-            if (STATUS_REJECTED.equals(batch.status())) {
-                throw new BusinessException("该批次已经驳回");
-            }
-            if (STATUS_APPROVED.equals(batch.status())) {
-                throw new BusinessException("已审核通过批次不能驳回");
-            }
-            throw new BusinessException("只有待审核批次可以驳回");
+        if (!Set.of(STATUS_PENDING_REVIEW, STATUS_ENRICHMENT_REQUIRED, STATUS_PENDING_APPROVAL)
+                .contains(batch.status())) {
+            throw new WorkflowStateException("退回操作状态无效，实际为 " + batch.status());
         }
-        String reviewNote = reason == null ? null : reason.trim();
-        if (reviewNote != null && reviewNote.length() > 500) {
-            throw new BusinessException("驳回原因不能超过 500 个字符");
-        }
-        if (reviewNote != null && reviewNote.isBlank()) {
-            reviewNote = null;
-        }
+        String reviewNote = normalizedReviewNote(reason, true);
         jdbcTemplate.update("""
                         UPDATE data_upload_batches
                         SET status = ?,
@@ -753,24 +1205,25 @@ public class DataUploadService {
                             review_note = ?
                         WHERE upload_id = ?
                         """,
-                STATUS_REJECTED,
+                STATUS_REVISION_REQUIRED,
                 user.getUserId(),
-                STATUS_REJECTED,
+                STATUS_REVISION_REQUIRED,
                 reviewNote,
                 uploadId
         );
+        insertAuditEvent(uploadId, batch.currentPackageId(), "REVISION_REQUIRED", user.getUserId(),
+                batch.status(), STATUS_REVISION_REQUIRED, reviewNote, null);
         return getBatch(uploadId);
     }
 
-    private Long syncSnapshotDataRow(Long uploadId, DataUploadRowResponse row, Long reviewedBy) throws IOException {
+    private Long syncSnapshotDataRow(Long uploadId, DataUploadRowResponse row) throws IOException {
         Map<String, String> data = row.getData();
         Long compoundId = getOrCreateCompound(data);
         Long methodId = getOrCreateMethod(data);
         Long plantId = getOrCreatePlant(data);
-        String reportedSiteKey = upsertReportedSite(data, uploadId, reviewedBy);
         String dedupeKey = sha256(("wbe-snapshot-v1\u001F" + uploadId + "\u001F" + row.getRowId())
                 .getBytes(StandardCharsets.UTF_8));
-        Long eventId = insertSamplingEvent(data, plantId, reportedSiteKey);
+        Long eventId = insertSamplingEvent(data, plantId, null);
         return insertMeasurement(data, compoundId, methodId, eventId, uploadId, row.getRowId(), dedupeKey);
     }
 
@@ -785,6 +1238,7 @@ public class DataUploadService {
 
     private void clearWorkbookManagedData() {
         for (String table : List.of(
+                "record_site_bridge",
                 "map_pndl_stats",
                 "icd11_sankey_path_sources",
                 "icd11_sankey_paths",
@@ -798,6 +1252,236 @@ public class DataUploadService {
         )) {
             if (tableExists(table)) jdbcTemplate.update("DELETE FROM " + table);
         }
+        if (tableExists("reported_sites")) {
+            jdbcTemplate.update("""
+                    UPDATE reported_sites
+                    SET include_in_point_count = FALSE,
+                        upload_id = NULL,
+                        upload_row_id = NULL,
+                        excel_row_number = NULL
+                    """);
+        }
+    }
+
+    private SiteLinkageMatcher.SiteRow toSiteRow(DataUploadRowResponse row) {
+        Map<String, String> data = row.getData();
+        return new SiteLinkageMatcher.SiteRow(
+                row.getExcelRowNumber(),
+                data.get("文献编号"),
+                data.get("DOI"),
+                data.get("国家"),
+                data.get("省/州"),
+                data.get("市"),
+                data.get("原始污水厂名称"),
+                data.get("规范污水厂名称"),
+                data.get("reported_site_key"),
+                data.get("confirmed_site_id"),
+                SiteLinkageMatcher.included(data.get("是否计入点位数")),
+                data.get("点位说明"),
+                data.get("同一污水厂确认依据")
+        );
+    }
+
+    private void upsertWorkbookReportedSite(Long uploadId,
+                                            DataUploadRowResponse row,
+                                            SiteLinkageMatcher.SiteRow site) {
+        String confirmedSiteId = nullIfBlank(site.confirmedSiteId());
+        if (confirmedSiteId != null) {
+            if (site.country().isBlank()) {
+                throw new BusinessException("点位关联表中 confirmed_site_id 必须有国家：" + confirmedSiteId);
+            }
+            String evidence = site.confirmationEvidence().isBlank()
+                    ? "点位关联表候选，尚未批准跨文献合并"
+                    : site.confirmationEvidence();
+            String existingCountry = queryOptionalString(
+                    "SELECT country FROM confirmed_sites WHERE confirmed_site_id = ?", confirmedSiteId);
+            if (existingCountry != null
+                    && !SiteLinkageMatcher.normalized(existingCountry)
+                    .equals(SiteLinkageMatcher.normalized(site.country()))) {
+                throw new BusinessException("confirmed_site_id “" + confirmedSiteId + "”不能跨国家复用");
+            }
+            jdbcTemplate.update("""
+                            INSERT INTO confirmed_sites (
+                                confirmed_site_id, canonical_name, country, province, city,
+                                status, confirmation_evidence, confirmed_at
+                            ) VALUES (?, ?, ?, ?, ?, 'CANDIDATE', ?, NOW())
+                            ON DUPLICATE KEY UPDATE
+                                canonical_name = COALESCE(NULLIF(VALUES(canonical_name), ''), canonical_name),
+                                province = COALESCE(NULLIF(VALUES(province), ''), province),
+                                city = COALESCE(NULLIF(VALUES(city), ''), city),
+                                confirmation_evidence = COALESCE(NULLIF(VALUES(confirmation_evidence), ''), confirmation_evidence)
+                            """,
+                    confirmedSiteId,
+                    nullIfBlank(site.canonicalPlantName()),
+                    site.country(),
+                    nullIfBlank(site.province()),
+                    nullIfBlank(site.city()),
+                    evidence);
+        }
+
+        jdbcTemplate.update("""
+                        INSERT INTO reported_sites (
+                            reported_site_key, literature_code, doi, raw_plant_name,
+                            canonical_plant_name, country, province, city, key_quality,
+                            confirmed_site_id, confirmation_evidence, include_in_point_count,
+                            site_note, upload_id, upload_row_id, excel_row_number
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'WORKBOOK', ?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            literature_code = VALUES(literature_code),
+                            doi = VALUES(doi),
+                            raw_plant_name = VALUES(raw_plant_name),
+                            canonical_plant_name = VALUES(canonical_plant_name),
+                            country = VALUES(country),
+                            province = VALUES(province),
+                            city = VALUES(city),
+                            key_quality = VALUES(key_quality),
+                            confirmed_site_id = VALUES(confirmed_site_id),
+                            confirmation_evidence = VALUES(confirmation_evidence),
+                            include_in_point_count = VALUES(include_in_point_count),
+                            site_note = VALUES(site_note),
+                            upload_id = VALUES(upload_id),
+                            upload_row_id = VALUES(upload_row_id),
+                            excel_row_number = VALUES(excel_row_number)
+                        """,
+                site.reportedSiteKey(),
+                site.literatureCode(),
+                nullIfBlank(site.doi()),
+                nullIfBlank(site.rawPlantName()),
+                nullIfBlank(site.canonicalPlantName()),
+                nullIfBlank(site.country()),
+                nullIfBlank(site.province()),
+                nullIfBlank(site.city()),
+                confirmedSiteId,
+                nullIfBlank(site.confirmationEvidence()),
+                site.includeInPointCount(),
+                nullIfBlank(site.siteNote()),
+                uploadId,
+                row.getRowId(),
+                row.getExcelRowNumber());
+    }
+
+    private void insertRecordSiteBridge(Long uploadId,
+                                        DataUploadRowResponse row,
+                                        Long measurementId,
+                                        SiteLinkageMatcher.MatchResult match) {
+        if (match.reportedSiteKeys().isEmpty()) {
+            insertRecordSiteBridgeRow(uploadId, row, measurementId, match, null, null);
+            return;
+        }
+        Map<String, String> effectiveByReported = new LinkedHashMap<>();
+        for (String effective : match.effectiveSiteKeys()) {
+            if (effective.startsWith("reported:")) {
+                effectiveByReported.put(effective.substring("reported:".length()), effective);
+            }
+        }
+        for (String reportedSiteKey : match.reportedSiteKeys()) {
+            insertRecordSiteBridgeRow(uploadId, row, measurementId, match,
+                    reportedSiteKey, effectiveByReported.get(reportedSiteKey));
+        }
+    }
+
+    private void insertRecordSiteBridgeRow(Long uploadId,
+                                           DataUploadRowResponse row,
+                                           Long measurementId,
+                                           SiteLinkageMatcher.MatchResult match,
+                                           String reportedSiteKey,
+                                           String effectiveSiteKey) {
+        jdbcTemplate.update("""
+                        INSERT INTO record_site_bridge (
+                            upload_id, upload_row_id, excel_row_number, internal_record_key,
+                            measurement_id, reported_site_key, effective_site_key, match_status
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                uploadId,
+                row.getRowId(),
+                row.getExcelRowNumber(),
+                match.internalRecordKey(),
+                measurementId,
+                reportedSiteKey,
+                effectiveSiteKey,
+                match.status());
+    }
+
+    private void persistSiteLinkQc(Long uploadId,
+                                   List<SiteLinkageMatcher.SiteRow> sites,
+                                   List<SiteLinkageMatcher.MatchResult> matches) {
+        Map<String, Long> statusCounts = matches.stream().collect(java.util.stream.Collectors.groupingBy(
+                SiteLinkageMatcher.MatchResult::status,
+                LinkedHashMap::new,
+                java.util.stream.Collectors.counting()));
+        Set<String> mappedSiteKeys = matches.stream()
+                .flatMap(match -> match.effectiveSiteKeys().stream())
+                .filter(key -> key.startsWith("reported:"))
+                .map(key -> key.substring("reported:".length()))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<Map<String, Object>> unmappedSites = sites.stream()
+                .filter(SiteLinkageMatcher.SiteRow::includeInPointCount)
+                .filter(site -> !mappedSiteKeys.contains(site.reportedSiteKey()))
+                .map(site -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("reportedSiteKey", site.reportedSiteKey());
+                    item.put("literatureCode", site.literatureCode());
+                    item.put("country", site.country());
+                    item.put("province", site.province());
+                    item.put("city", site.city());
+                    item.put("rawPlantName", site.rawPlantName());
+                    return item;
+                })
+                .toList();
+        long includedSites = sites.stream().filter(SiteLinkageMatcher.SiteRow::includeInPointCount).count();
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("mergeConfirmedCrossDocumentSites", false);
+        report.put("pointCountBasis", "reported_site_key");
+        report.put("siteRows", sites.size());
+        report.put("includedSites", includedSites);
+        report.put("excludedSites", sites.size() - includedSites);
+        report.put("recordRows", matches.size());
+        report.put("matchStatusCounts", statusCounts);
+        report.put("mappedSites", mappedSiteKeys.size());
+        report.put("unmappedSites", unmappedSites);
+
+        jdbcTemplate.update("""
+                        INSERT INTO site_link_import_qc (
+                            upload_id, merge_confirmed_cross_document_sites,
+                            site_rows, included_sites, excluded_sites, mapped_sites, unmapped_sites,
+                            record_rows, exact_records, multi_site_records, location_fallback_records,
+                            excluded_records, unmatched_country_records, unmatched_records, report_json
+                        ) VALUES (?, FALSE, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE
+                            merge_confirmed_cross_document_sites = FALSE,
+                            site_rows = VALUES(site_rows),
+                            included_sites = VALUES(included_sites),
+                            excluded_sites = VALUES(excluded_sites),
+                            mapped_sites = VALUES(mapped_sites),
+                            unmapped_sites = VALUES(unmapped_sites),
+                            record_rows = VALUES(record_rows),
+                            exact_records = VALUES(exact_records),
+                            multi_site_records = VALUES(multi_site_records),
+                            location_fallback_records = VALUES(location_fallback_records),
+                            excluded_records = VALUES(excluded_records),
+                            unmatched_country_records = VALUES(unmatched_country_records),
+                            unmatched_records = VALUES(unmatched_records),
+                            report_json = VALUES(report_json),
+                            created_at = NOW()
+                        """,
+                uploadId,
+                sites.size(),
+                includedSites,
+                sites.size() - includedSites,
+                mappedSiteKeys.size(),
+                unmappedSites.size(),
+                matches.size(),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_EXACT, 0L),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_MULTI, 0L),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_POSITION_FALLBACK, 0L),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_EXCLUDED, 0L),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_UNMATCHED_COUNTRY, 0L),
+                statusCounts.getOrDefault(SiteLinkageMatcher.STATUS_UNMATCHED, 0L),
+                toJson(report));
+    }
+
+    private String nullIfBlank(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private void insertLiterature(Long uploadId, DataUploadRowResponse row) {
@@ -825,7 +1509,7 @@ public class DataUploadService {
         if (literatureCount == null) literatureCount = BigDecimal.ONE;
         return insertAndReturnKey("""
                         INSERT INTO icd11_sankey_paths (
-                            target_category, substance_category, substance_subclass,
+                            target_category, substance_category, substance_subclass, substance_fine,
                             drug_name, indication_original, biomarker_name, biomarker_alias,
                             normalized_indication, disease_entity,
                             icd11_level1_code, icd11_level1_name,
@@ -836,11 +1520,12 @@ public class DataUploadService {
                             literature_count, data_row_count, unique_doi_count, missing_doi_count,
                             upload_id, upload_row_id, raw_payload
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                  ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 valueOrFallback(data.get("目标类别"), "未分类"),
                 valueOrFallback(data.get("目标物质类别"), "未分类"),
                 valueOrFallback(data.get("目标物质子类"), "未分类"),
+                valueOrNull(data.get("目标物质细类")),
                 valueOrFallback(data.get("药物"), "未命名药物"),
                 valueOrNull(data.get("适应症原文")),
                 valueOrFallback(data.get("生物标记物名称"), "未命名生物标记物"),
@@ -918,9 +1603,9 @@ public class DataUploadService {
         jdbcTemplate.update("""
                         INSERT INTO home_target_records (
                             literature_id, doi, target_category, target_group,
-                            substance_category, substance_subclass, biomarker_name,
+                            substance_category, substance_subclass, substance_fine, biomarker_name,
                             source_sheet, source_row_number
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 literatureCode,
                 doi,
@@ -928,6 +1613,7 @@ public class DataUploadService {
                 targetCategory.contains("药物") ? "drug" : "consumer",
                 substanceCategory,
                 valueOrFallback(data.get("目标物质子类"), "默认"),
+                valueOrNull(data.get("目标物质细类")),
                 biomarkerName,
                 DATA_SHEET_NAME,
                 row.getExcelRowNumber()
@@ -1035,7 +1721,7 @@ public class DataUploadService {
         List<String[]> rows = List.of(
                 new String[]{"格式要求", "文件类型", "仅支持 .xlsx 文件。"},
                 new String[]{"格式要求", "工作表名称", "必须保留名为“数据表”的 sheet。"},
-                new String[]{"格式要求", "表头规则", "“数据表”第 1 行前 58 列必须与字段清单完全一致；不要调整顺序。"},
+                new String[]{"格式要求", "表头规则", "“数据表”第 1 行前 59 列必须与字段清单完全一致；不要调整顺序。"},
                 new String[]{"格式要求", "可选列", "可填写采样点编号、详细地址、经纬度和人工确认点位字段；confirmed_site_id 有值时必须填写点位确认依据。"},
                 new String[]{"数据规则", "NA / ND / <LOD / <LOQ", "系统会保留原始值；可入 DECIMAL 的部分入库，无法入库的数值列写入 NULL 并给出警告。"},
                 new String[]{"同步规则", "审核与同步", "上传校验通过后先进入待审核队列；审核通过后，再由具备同步权限的人员入库。"},
@@ -1097,6 +1783,7 @@ public class DataUploadService {
                 "目标类别",
                 "目标物质类别",
                 "目标物质子类",
+                "目标物质细类",
                 "药物",
                 "适应症",
                 "处方/非处方",
@@ -1213,6 +1900,7 @@ public class DataUploadService {
         String targetCategory = valueOrFallback(data.get("目标类别"), "NA");
         String substanceCategory = valueOrFallback(data.get("目标物质类别"), "NA");
         String substanceSubclass = valueOrNull(data.get("目标物质子类"));
+        String substanceFine = valueOrNull(data.get("目标物质细类"));
         String biomarkerName = valueOrNull(data.get("生物标记物名称"));
         String biomarkerCas = valueOrNull(data.get("生物标记物CAS"));
         String drugName = firstUseful(data.get("药物"), data.get("生物标记物名称"), data.get("biomarker"), "NA");
@@ -1223,6 +1911,7 @@ public class DataUploadService {
                           AND target_category = ?
                           AND substance_category = ?
                           AND ((substance_subclass IS NULL AND ? IS NULL) OR substance_subclass = ?)
+                          AND ((substance_fine IS NULL AND ? IS NULL) OR substance_fine = ?)
                           AND ((biomarker_name IS NULL AND ? IS NULL) OR biomarker_name = ?)
                           AND ((biomarker_cas IS NULL AND ? IS NULL) OR biomarker_cas = ?)
                         LIMIT 1
@@ -1232,6 +1921,8 @@ public class DataUploadService {
                 substanceCategory,
                 substanceSubclass,
                 substanceSubclass,
+                substanceFine,
+                substanceFine,
                 biomarkerName,
                 biomarkerName,
                 biomarkerCas,
@@ -1245,6 +1936,7 @@ public class DataUploadService {
                             target_category,
                             substance_category,
                             substance_subclass,
+                            substance_fine,
                             drug_name,
                             indications,
                             prescription_type,
@@ -1261,11 +1953,12 @@ public class DataUploadService {
                             doi,
                             abstract
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 targetCategory,
                 substanceCategory,
                 substanceSubclass,
+                substanceFine,
                 drugName,
                 valueOrNull(data.get("适应症")),
                 safePrescriptionType(data.get("处方/非处方")),
@@ -1607,29 +2300,80 @@ public class DataUploadService {
         );
     }
 
-    private ParsedWorkbook parseWorkbook(byte[] bytes) {
+    private ParsedWorkbook parseSubmissionWorkbook(Path workbookPath) {
         IOUtils.setByteArrayMaxOverride(256 * 1024 * 1024);
-        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+        try (Workbook workbook = WorkbookFactory.create(workbookPath.toFile(), null, true)) {
+            if (!(workbook instanceof XSSFWorkbook)) {
+                throw new BusinessException("文件内容不是有效的 .xlsx 工作簿");
+            }
             DataFormatter formatter = new DataFormatter(Locale.CHINA);
             List<String> headerErrors = new ArrayList<>();
-            for (String sheetName : REQUIRED_SHEETS) {
+            Sheet dataSheet = workbook.getSheet(DATA_SHEET_NAME);
+            if (dataSheet == null) {
+                headerErrors.add("提交文件必须包含名为“数据表”的工作表");
+            }
+            if (!headerErrors.isEmpty()) return new ParsedWorkbook(headerErrors, List.of());
+
+            List<ParsedRow> rows = new ArrayList<>();
+            List<String> dataRequiredHeaders = hasHeaderAt(dataSheet, 4, "目标物质细类", formatter)
+                    ? REQUIRED_HEADERS : LEGACY_REQUIRED_HEADERS;
+            rows.addAll(parseSheet(dataSheet, DATA_SHEET_NAME,
+                    combinedDataHeaders(dataRequiredHeaders), dataRequiredHeaders, formatter, headerErrors));
+            if (headerErrors.isEmpty() && rows.isEmpty()) {
+                headerErrors.add("数据表中至少需要包含一行数据");
+            }
+            return new ParsedWorkbook(headerErrors, rows);
+        } catch (Exception ex) {
+            LOGGER.warn("上传的 Excel 提交文件无法解析：{}", workbookPath.getFileName(), ex);
+            throw new BusinessException("Excel 文件无法读取或格式损坏");
+        }
+    }
+
+    private ParsedWorkbook parseReviewPackage(Path workbookPath) {
+        IOUtils.setByteArrayMaxOverride(256 * 1024 * 1024);
+        try (Workbook workbook = WorkbookFactory.create(workbookPath.toFile(), null, true)) {
+            if (!(workbook instanceof XSSFWorkbook)) {
+                throw new BusinessException("文件内容不是有效的 .xlsx 工作簿");
+            }
+            DataFormatter formatter = new DataFormatter(Locale.CHINA);
+            List<String> headerErrors = new ArrayList<>();
+            for (String sheetName : REVIEW_PACKAGE_SHEETS) {
                 if (workbook.getSheet(sheetName) == null) {
-                    headerErrors.add("上传文件必须包含名为“" + sheetName + "”的工作表");
+                    headerErrors.add("完整整理包必须包含名为“" + sheetName + "”的工作表");
                 }
             }
             if (!headerErrors.isEmpty()) return new ParsedWorkbook(headerErrors, List.of());
 
             List<ParsedRow> rows = new ArrayList<>();
-            rows.addAll(parseSheet(workbook.getSheet(DATA_SHEET_NAME), DATA_SHEET_NAME,
-                    combinedDataHeaders(), REQUIRED_HEADERS, formatter, headerErrors));
-            rows.addAll(parseSheet(workbook.getSheet(ICD11_SHEET_NAME), ICD11_SHEET_NAME,
-                    ICD11_HEADERS, ICD11_HEADERS, formatter, headerErrors));
+            Sheet dataSheet = workbook.getSheet(DATA_SHEET_NAME);
+            List<String> dataRequiredHeaders = hasHeaderAt(dataSheet, 4, "目标物质细类", formatter)
+                    ? REQUIRED_HEADERS : LEGACY_REQUIRED_HEADERS;
+            rows.addAll(parseSheet(dataSheet, DATA_SHEET_NAME,
+                    combinedDataHeaders(dataRequiredHeaders), dataRequiredHeaders, formatter, headerErrors));
+            rows.addAll(parseSheet(workbook.getSheet(SITE_SHEET_NAME), SITE_SHEET_NAME,
+                    SITE_HEADERS, SITE_HEADERS, formatter, headerErrors));
+            Sheet icd11Sheet = workbook.getSheet(ICD11_SHEET_NAME);
+            List<String> icd11Headers = hasHeaderAt(icd11Sheet, 3, "目标物质细类", formatter)
+                    ? ICD11_HEADERS : LEGACY_ICD11_HEADERS;
+            rows.addAll(parseSheet(icd11Sheet, ICD11_SHEET_NAME,
+                    icd11Headers, icd11Headers, formatter, headerErrors));
             rows.addAll(parseSheet(workbook.getSheet(LITERATURE_SHEET_NAME), LITERATURE_SHEET_NAME,
                     LITERATURE_HEADERS, LITERATURE_HEADERS, formatter, headerErrors));
+            rows.addAll(parseSheet(workbook.getSheet(CORE_MARKER_SHEET_NAME), CORE_MARKER_SHEET_NAME,
+                    CORE_MARKER_HEADERS, CORE_MARKER_HEADERS, formatter, headerErrors));
+            rows.addAll(parseSheet(workbook.getSheet(METHODOLOGY_AUDIT_SHEET_NAME), METHODOLOGY_AUDIT_SHEET_NAME,
+                    METHODOLOGY_AUDIT_HEADERS, METHODOLOGY_AUDIT_HEADERS, formatter, headerErrors));
             if (headerErrors.isEmpty()) addCrossSheetValidation(rows);
+            if (headerErrors.isEmpty()) {
+                for (String sheetName : REVIEW_PACKAGE_SHEETS) {
+                    boolean hasRows = rows.stream().anyMatch(row -> sheetName.equals(row.sheetName()));
+                    if (!hasRows) headerErrors.add("完整整理包的“" + sheetName + "”至少需要包含一行数据");
+                }
+            }
             return new ParsedWorkbook(headerErrors, rows);
         } catch (Exception ex) {
-            throw new BusinessException("Excel 解析失败：" + ex.getMessage());
+            LOGGER.warn("上传的 Excel 完整整理包无法解析：{}", workbookPath.getFileName(), ex);
+            throw new BusinessException("Excel 文件无法读取或格式损坏");
         }
     }
 
@@ -1670,6 +2414,11 @@ public class DataUploadService {
         return errors;
     }
 
+    private boolean hasHeaderAt(Sheet sheet, int columnIndex, String expected, DataFormatter formatter) {
+        Row header = sheet == null ? null : sheet.getRow(0);
+        return header != null && expected.equals(normalizeCell(formatter.formatCellValue(header.getCell(columnIndex))));
+    }
+
     private Map<String, String> readRow(Row row, List<String> headers, DataFormatter formatter) {
         Map<String, String> data = new LinkedHashMap<>();
         for (int i = 0; i < headers.size(); i++) {
@@ -1684,8 +2433,14 @@ public class DataUploadService {
         List<String> warnings = new ArrayList<>();
         if (DATA_SHEET_NAME.equals(sheetName)) {
             validateDataRow(data, errors, warnings);
+        } else if (SITE_SHEET_NAME.equals(sheetName)) {
+            validateSiteRow(data, errors, warnings);
         } else if (ICD11_SHEET_NAME.equals(sheetName)) {
             validateIcd11Row(data, errors, warnings);
+        } else if (CORE_MARKER_SHEET_NAME.equals(sheetName)) {
+            validateCoreMarkerRow(data, errors, warnings);
+        } else if (METHODOLOGY_AUDIT_SHEET_NAME.equals(sheetName)) {
+            validateMethodologyAuditRow(data, errors, warnings);
         } else {
             requireUseful(data, "文献编号", errors);
             if (!isUseful(data.get("DOI"))) warnings.add("DOI 为空，仍保留文献记录并计入 DOI 缺失统计");
@@ -1729,6 +2484,32 @@ public class DataUploadService {
         validateDecimalFields(data, warnings);
     }
 
+    private void validateSiteRow(Map<String, String> data, List<String> errors, List<String> warnings) {
+        requireUseful(data, "文献编号", errors);
+        String includeValue = normalizeCell(data.get("是否计入点位数"));
+        if (!Set.of("是", "否", "yes", "no", "y", "n", "true", "false", "1", "0")
+                .contains(includeValue.toLowerCase(Locale.ROOT))) {
+            errors.add("是否计入点位数只能填写是/否");
+        }
+        boolean included = SiteLinkageMatcher.included(includeValue);
+        String siteKey = SiteLinkageMatcher.text(data.get("reported_site_key"));
+        if (included && siteKey.isEmpty()) {
+            errors.add("计入点位数时 reported_site_key 不能为空");
+        }
+        if (siteKey.length() > 64) {
+            errors.add("reported_site_key 不能超过 64 个字符");
+        }
+        if (!included && !isUseful(data.get("点位说明"))) {
+            warnings.add("不计入点位数时建议填写点位说明或排除原因");
+        }
+        if (isUseful(data.get("confirmed_site_id")) && !isUseful(data.get("同一污水厂确认依据"))) {
+            warnings.add("confirmed_site_id 当前仅作为候选；建议填写同一污水厂确认依据");
+        }
+        if (included && !isUseful(data.get("国家"))) {
+            warnings.add("计入点位数但国家为空，该点位会保留在 QC 未映射清单中，不进入地图区域统计");
+        }
+    }
+
     private void validateCoordinate(String rawValue,
                                     String field,
                                     BigDecimal minimum,
@@ -1765,6 +2546,38 @@ public class DataUploadService {
         if (!isUseful(data.get("复核状态"))) warnings.add("复核状态为空，建议复核后再发布");
     }
 
+    private void validateCoreMarkerRow(Map<String, String> data, List<String> errors, List<String> warnings) {
+        for (String field : List.of("序号", "目标类别_主类", "目标物质类别_主类",
+                "生物标记物名称", "原始记录数", "目标类别内综合得分", "目标类别内排名")) {
+            requireUseful(data, field, errors);
+        }
+        if (!isUseful(data.get("biomarker")) && !isUseful(data.get("生物标记物名称"))) {
+            errors.add("biomarker 和生物标记物名称至少需要填写一个");
+        }
+        if (isUseful(data.get("异常检查"))) {
+            warnings.add("异常检查存在内容，终审前必须确认：" + truncate(data.get("异常检查"), 160));
+        }
+        if (!isUseful(data.get("四级评价状态"))) {
+            warnings.add("四级评价状态为空，请确认该行是否适用四级评价");
+        }
+    }
+
+    private void validateMethodologyAuditRow(Map<String, String> data,
+                                             List<String> errors,
+                                             List<String> warnings) {
+        for (String field : List.of("文献编号", "数据表采样方法（原文摘录）", "规范化采样方法明细",
+                "标准采样方法", "采样主类", "采样对象", "复核状态")) {
+            requireUseful(data, field, errors);
+        }
+        if (!isUseful(data.get("来源文件")) || !isUseful(data.get("页码/表号/sheet"))
+                || !isUseful(data.get("原文证据"))) {
+            warnings.add("来源文件、页码/表号/sheet 或原文证据不完整，追溯性需要人工确认");
+        }
+        if (!Set.of("已复核", "已确认", "通过", "无需复核").contains(normalizeCell(data.get("复核状态")))) {
+            warnings.add("复核状态不是明确的已复核状态");
+        }
+    }
+
     private void addCrossSheetValidation(List<ParsedRow> rows) {
         Set<String> literatureCodes = new LinkedHashSet<>();
         Map<String, String> literatureDois = new LinkedHashMap<>();
@@ -1787,11 +2600,75 @@ public class DataUploadService {
                     }
                 });
 
+        Set<String> reportedSiteKeys = new LinkedHashSet<>();
+        rows.stream()
+                .filter(row -> SITE_SHEET_NAME.equals(row.sheetName()))
+                .forEach(row -> {
+                    String code = valueOrNull(row.data().get("文献编号"));
+                    if (code != null && !literatureCodes.contains(code)) {
+                        row.errors().add("文献编号“" + code + "”未在文献基础信息中定义");
+                    }
+                    String siteKey = SiteLinkageMatcher.text(row.data().get("reported_site_key"));
+                    if (!siteKey.isEmpty() && !reportedSiteKeys.add(siteKey)) {
+                        row.errors().add("reported_site_key 在点位关联表中重复：" + siteKey);
+                    }
+                });
+
         validateReportedSiteConfirmations(rows);
 
         rows.stream()
                 .filter(row -> ICD11_SHEET_NAME.equals(row.sheetName()))
                 .forEach(row -> validateIcd11Sources(row, literatureCodes, literatureDois));
+
+        Set<String> dataSamplingKeys = new LinkedHashSet<>();
+        Set<String> dataBiomarkers = new LinkedHashSet<>();
+        rows.stream()
+                .filter(row -> DATA_SHEET_NAME.equals(row.sheetName()))
+                .forEach(row -> {
+                    String code = normalizeCell(row.data().get("文献编号"));
+                    String method = normalizeCell(row.data().get("采样方法"));
+                    if (!code.isBlank() && !method.isBlank()) {
+                        dataSamplingKeys.add(code + "\u001F" + method);
+                    }
+                    String marker = firstUseful(
+                            row.data().get("biomarker"),
+                            row.data().get("生物标记物名称"),
+                            row.data().get("药物")
+                    );
+                    if (marker != null) dataBiomarkers.add(marker.toLowerCase(Locale.ROOT));
+                });
+
+        rows.stream()
+                .filter(row -> METHODOLOGY_AUDIT_SHEET_NAME.equals(row.sheetName()))
+                .forEach(row -> {
+                    String code = valueOrNull(row.data().get("文献编号"));
+                    if (code != null && !literatureCodes.contains(code)) {
+                        row.errors().add("文献编号“" + code + "”未在文献基础信息中定义");
+                    }
+                    String samplingKey = normalizeCell(row.data().get("文献编号")) + "\u001F"
+                            + normalizeCell(row.data().get("数据表采样方法（原文摘录）"));
+                    if (!dataSamplingKeys.contains(samplingKey)) {
+                        row.warnings().add("该采样方法原文未在数据表同一文献中找到完全一致的记录");
+                    }
+                });
+
+        Set<String> coreMarkerKeys = new LinkedHashSet<>();
+        rows.stream()
+                .filter(row -> CORE_MARKER_SHEET_NAME.equals(row.sheetName()))
+                .forEach(row -> {
+                    String marker = firstUseful(
+                            row.data().get("biomarker"),
+                            row.data().get("生物标记物名称")
+                    );
+                    if (marker == null) return;
+                    String normalized = marker.toLowerCase(Locale.ROOT);
+                    if (!coreMarkerKeys.add(normalized)) {
+                        row.errors().add("核心标记物在优先级识别表中重复：" + marker);
+                    }
+                    if (!dataBiomarkers.contains(normalized)) {
+                        row.warnings().add("该核心标记物未在数据表中找到完全一致的名称");
+                    }
+                });
     }
 
     private void validateIcd11Sources(ParsedRow row,
@@ -1834,29 +2711,22 @@ public class DataUploadService {
         }
     }
 
-    private List<String> combinedDataHeaders() {
-        List<String> headers = new ArrayList<>(REQUIRED_HEADERS);
+    private List<String> combinedDataHeaders(List<String> requiredHeaders) {
+        List<String> headers = new ArrayList<>(requiredHeaders);
         headers.addAll(OPTIONAL_HEADERS);
         return headers;
     }
 
     private void validateReportedSiteConfirmations(List<ParsedRow> rows) {
-        Map<String, String> confirmedByReportedKey = new LinkedHashMap<>();
         Map<String, String> countryByConfirmedId = new LinkedHashMap<>();
         Map<String, String> existingConfirmedCountries = new LinkedHashMap<>();
-        Map<String, String> existingAssignments = new LinkedHashMap<>();
         for (ParsedRow row : rows) {
-            if (!DATA_SHEET_NAME.equals(row.sheetName())) continue;
+            if (!SITE_SHEET_NAME.equals(row.sheetName())) continue;
             Map<String, String> data = row.data();
-            ReportedSiteIdentity.Identity identity = reportedSiteIdentity(data);
             String confirmedSiteId = valueOrNull(data.get("confirmed_site_id"));
             if (confirmedSiteId == null) continue;
-            String country = ReportedSiteIdentity.normalize(data.get("污水厂位置_国"));
+            String country = SiteLinkageMatcher.normalized(data.get("国家"));
 
-            String priorForKey = confirmedByReportedKey.putIfAbsent(identity.reportedSiteKey(), confirmedSiteId);
-            if (priorForKey != null && !priorForKey.equals(confirmedSiteId)) {
-                row.errors().add("同一文献内点位不能绑定多个 confirmed_site_id");
-            }
             String priorCountry = countryByConfirmedId.putIfAbsent(confirmedSiteId, country);
             if (priorCountry != null && !priorCountry.equals(country)) {
                 row.errors().add("confirmed_site_id “" + confirmedSiteId + "”不能跨国家使用");
@@ -1866,15 +2736,8 @@ public class DataUploadService {
                 String existingCountry = existingConfirmedCountries.computeIfAbsent(confirmedSiteId, id -> queryOptionalString(
                         "SELECT country FROM confirmed_sites WHERE confirmed_site_id = ?", id));
                 if (existingCountry != null
-                        && !ReportedSiteIdentity.normalize(existingCountry).equals(country)) {
+                        && !SiteLinkageMatcher.normalized(existingCountry).equals(country)) {
                     row.errors().add("confirmed_site_id “" + confirmedSiteId + "”已归属其他国家");
-                }
-            }
-            if (tableExists("reported_sites")) {
-                String existingAssignment = existingAssignments.computeIfAbsent(identity.reportedSiteKey(), key -> queryOptionalString(
-                        "SELECT confirmed_site_id FROM reported_sites WHERE reported_site_key = ?", key));
-                if (existingAssignment != null && !existingAssignment.equals(confirmedSiteId)) {
-                    row.errors().add("该文献内点位已经人工确认，不能通过工作簿直接改绑 confirmed_site_id");
                 }
             }
         }
@@ -2064,8 +2927,7 @@ public class DataUploadService {
     }
 
     private boolean isNaToken(String value) {
-        String normalized = normalizeCell(value);
-        return normalized.equalsIgnoreCase("NA") || normalized.equalsIgnoreCase("N/A") || normalized.equals("/");
+        return SiteLinkageMatcher.text(value).isEmpty();
     }
 
     private String valueOrNull(String value) {
@@ -2089,36 +2951,200 @@ public class DataUploadService {
         return value == null || value.isBlank() ? "空" : value;
     }
 
-    private byte[] readBytes(MultipartFile file) {
+    private String validateAndNormalizeOriginalFileName(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException("请选择需要上传的 Excel 文件");
+        }
+        long maxFileSize = storageProperties.getMaxFileSize().toBytes();
+        if (file.getSize() > maxFileSize) {
+            throw new BusinessException("上传文件不能超过 " + formatMegabytes(maxFileSize) + "MB");
+        }
+        String originalName = Optional.ofNullable(file.getOriginalFilename()).orElse("").trim();
+        originalName = originalName.replace('\\', '/');
+        int lastSeparator = originalName.lastIndexOf('/');
+        if (lastSeparator >= 0) {
+            originalName = originalName.substring(lastSeparator + 1);
+        }
+        originalName = originalName.replaceAll("[\\p{Cntrl}]", "").trim();
+        if (originalName.isBlank()) {
+            throw new BusinessException("上传文件名不能为空");
+        }
+        if (originalName.length() > 255) {
+            throw new BusinessException("上传文件名不能超过 255 个字符");
+        }
+        if (!originalName.toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
+            throw new BusinessException("仅支持 .xlsx 文件");
+        }
+        return originalName;
+    }
+
+    private StagedFile stageUpload(MultipartFile file) {
+        Path uploadDir = prepareUploadDirectory();
+        Path temporaryFile = null;
         try {
-            return file.getBytes();
-        } catch (IOException ex) {
-            throw new BusinessException("读取上传文件失败");
+            temporaryFile = Files.createTempFile(uploadDir, ".wbe-upload-", ".tmp").normalize();
+            ensurePathWithinRoot(temporaryFile, uploadDir);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            long maxFileSize = storageProperties.getMaxFileSize().toBytes();
+            long written = 0;
+            try (InputStream rawInput = file.getInputStream();
+                 DigestInputStream input = new DigestInputStream(rawInput, digest);
+                 OutputStream output = Files.newOutputStream(
+                         temporaryFile,
+                         StandardOpenOption.WRITE,
+                         StandardOpenOption.TRUNCATE_EXISTING)) {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read == 0) {
+                        continue;
+                    }
+                    written += read;
+                    if (written > maxFileSize) {
+                        throw new BusinessException("上传文件不能超过 " + formatMegabytes(maxFileSize) + "MB");
+                    }
+                    output.write(buffer, 0, read);
+                }
+            }
+            if (written == 0) {
+                throw new BusinessException("上传文件不能为空");
+            }
+            return new StagedFile(temporaryFile, HexFormat.of().formatHex(digest.digest()));
+        } catch (BusinessException ex) {
+            deletePathQuietly(temporaryFile);
+            throw ex;
+        } catch (NoSuchAlgorithmException ex) {
+            deletePathQuietly(temporaryFile);
+            throw new BusinessException("无法计算文件校验值");
+        } catch (IOException | SecurityException ex) {
+            deletePathQuietly(temporaryFile);
+            throw new BusinessException("保存上传文件失败：上传目录不可写或文件读取失败");
         }
     }
 
-    private StoredFile storeFile(byte[] bytes, String fileName) {
+    private Path prepareUploadDirectory() {
+        Path uploadDir;
         try {
-            Path uploadDir = Path.of(System.getProperty("user.dir"), "uploads", "data");
+            uploadDir = storageProperties.normalizedUploadDir();
             Files.createDirectories(uploadDir);
-            String safeName = UUID.randomUUID() + "_" + fileName.replaceAll("[\\\\/]+", "_");
-            Path path = uploadDir.resolve(safeName);
-            Files.write(path, bytes);
-            return new StoredFile(path);
-        } catch (IOException ex) {
+        } catch (IOException | SecurityException | IllegalStateException ex) {
+            throw new BusinessException("上传目录不可写，请联系系统管理员");
+        }
+        if (!Files.isDirectory(uploadDir, LinkOption.NOFOLLOW_LINKS) || !Files.isWritable(uploadDir)) {
+            throw new BusinessException("上传目录不可写，请联系系统管理员");
+        }
+        return uploadDir;
+    }
+
+    private StoredFile promoteStagedFile(StagedFile stagedFile) {
+        Path uploadDir = prepareUploadDirectory();
+        Path finalPath = uploadDir.resolve(UUID.randomUUID() + ".xlsx").normalize();
+        ensurePathWithinRoot(finalPath, uploadDir);
+        try {
+            try {
+                Files.move(stagedFile.path(), finalPath, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ex) {
+                Files.move(stagedFile.path(), finalPath);
+            }
+        } catch (IOException | SecurityException ex) {
+            deleteStagedFile(stagedFile);
+            deletePathQuietly(finalPath);
             throw new BusinessException("保存上传文件失败");
         }
+        registerRollbackCleanup(finalPath);
+        return new StoredFile(finalPath);
     }
 
-    private void deleteStoredFile(StoredFile storedFile) {
-        if (storedFile == null || storedFile.path() == null) {
+    private void registerRollbackCleanup(Path newFile) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            deletePathQuietly(newFile);
+            throw new BusinessException("上传事务未正确启动，文件未保存");
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    deletePathQuietly(newFile);
+                }
+            }
+        });
+    }
+
+    private Path resolveStoredFilePath(String storedFilePath) {
+        final Path candidate;
+        try {
+            Path rawPath = Path.of(storedFilePath);
+            candidate = rawPath.isAbsolute()
+                    ? rawPath.normalize()
+                    : Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
+                    .resolve(rawPath).normalize();
+        } catch (RuntimeException ex) {
+            throw new BusinessException("原始文件路径无效");
+        }
+        Path configuredRoot = storageProperties.normalizedUploadDir();
+        Path legacyRoot = legacyUploadDirectory();
+        if (!candidate.startsWith(configuredRoot) && !candidate.startsWith(legacyRoot)) {
+            throw new BusinessException("原始文件路径无效");
+        }
+        return candidate;
+    }
+
+    private Path legacyUploadDirectory() {
+        return Path.of(System.getProperty("user.dir"), "uploads", "data").toAbsolutePath().normalize();
+    }
+
+    private void ensureRealPathWithinManagedRoots(Path path) {
+        try {
+            Path realPath = path.toRealPath();
+            for (Path root : List.of(storageProperties.normalizedUploadDir(), legacyUploadDirectory())) {
+                if (Files.exists(root) && realPath.startsWith(root.toRealPath())) {
+                    return;
+                }
+            }
+        } catch (IOException | SecurityException ex) {
+            throw new BusinessException("原始文件路径无效");
+        }
+        throw new BusinessException("原始文件路径无效");
+    }
+
+    private String safeDownloadFileName(String fileName) {
+        String normalized = Optional.ofNullable(fileName).orElse("原始数据.xlsx")
+                .replace('\\', '/')
+                .replaceAll("[\\p{Cntrl}]", "")
+                .trim();
+        int lastSeparator = normalized.lastIndexOf('/');
+        if (lastSeparator >= 0) {
+            normalized = normalized.substring(lastSeparator + 1);
+        }
+        return normalized.isBlank() ? "原始数据.xlsx" : normalized;
+    }
+
+    private void ensurePathWithinRoot(Path path, Path root) {
+        if (!path.toAbsolutePath().normalize().startsWith(root.toAbsolutePath().normalize())) {
+            throw new BusinessException("上传文件路径无效");
+        }
+    }
+
+    private void deleteStagedFile(StagedFile stagedFile) {
+        if (stagedFile == null) {
+            return;
+        }
+        deletePathQuietly(stagedFile.path());
+    }
+
+    private void deletePathQuietly(Path path) {
+        if (path == null) {
             return;
         }
         try {
-            Files.deleteIfExists(storedFile.path());
+            Files.deleteIfExists(path);
         } catch (IOException ignored) {
-            // The failed upload is still audited even if the temporary file cleanup cannot complete.
+            // 清理失败不覆盖原始业务异常；仅清理本次生成的 UUID/临时文件。
         }
+    }
+
+    private String formatMegabytes(long bytes) {
+        return Long.toString(bytes / (1024 * 1024));
     }
 
     private String truncate(String value, int maxLength) {
@@ -2152,6 +3178,248 @@ public class DataUploadService {
             return Optional.of("检测到相同 SHA256 的历史上传文件，请确认是否重复导入");
         }
         return Optional.empty();
+    }
+
+    private String normalizedReviewNote(String note, boolean required) {
+        String normalized = note == null ? "" : note.trim();
+        if (required && normalized.isBlank()) {
+            throw new BusinessException("退回修改时必须填写具体原因");
+        }
+        if (normalized.length() > 500) {
+            throw new BusinessException("审核备注不能超过 500 个字符");
+        }
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private int nextReviewPackageVersion(Long uploadId) {
+        Integer current = jdbcTemplate.queryForObject("""
+                SELECT COALESCE(MAX(version_no), 0)
+                FROM data_upload_review_packages
+                WHERE upload_id = ?
+                """, Integer.class, uploadId);
+        return (current == null ? 0 : current) + 1;
+    }
+
+    private Long insertReviewPackage(Long uploadId,
+                                     int versionNo,
+                                     String fileName,
+                                     String storedFilePath,
+                                     String sha256,
+                                     Long uploadedBy,
+                                     String status,
+                                     int totalRows,
+                                     int validRows,
+                                     int errorRows,
+                                     int warningRows,
+                                     List<String> validationErrors,
+                                     Map<String, Object> diffSummary) {
+        return insertAndReturnKey("""
+                        INSERT INTO data_upload_review_packages (
+                            upload_id, version_no, file_name, stored_file_path, sha256, uploaded_by,
+                            status, total_rows, valid_rows, error_rows, warning_rows,
+                            validation_message, diff_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                uploadId,
+                versionNo,
+                fileName,
+                storedFilePath,
+                sha256,
+                uploadedBy,
+                status,
+                totalRows,
+                validRows,
+                errorRows,
+                warningRows,
+                toJson(validationErrors == null ? List.of() : validationErrors),
+                toJson(diffSummary == null ? Map.of() : diffSummary)
+        );
+    }
+
+    private DataUploadReviewPackageResponse getReviewPackage(Long packageId) {
+        DataUploadReviewPackageResponse response = jdbcTemplate.queryForObject("""
+                        SELECT p.*, u.username AS uploaded_by_name
+                        FROM data_upload_review_packages p
+                        JOIN users u ON u.user_id = p.uploaded_by
+                        WHERE p.package_id = ?
+                        """,
+                (rs, rowNum) -> DataUploadReviewPackageResponse.builder()
+                        .packageId(rs.getLong("package_id"))
+                        .uploadId(rs.getLong("upload_id"))
+                        .versionNo(rs.getInt("version_no"))
+                        .fileName(rs.getString("file_name"))
+                        .status(rs.getString("status"))
+                        .uploadedBy(rs.getLong("uploaded_by"))
+                        .uploadedByName(rs.getString("uploaded_by_name"))
+                        .totalRows(rs.getInt("total_rows"))
+                        .validRows(rs.getInt("valid_rows"))
+                        .errorRows(rs.getInt("error_rows"))
+                        .warningRows(rs.getInt("warning_rows"))
+                        .createdAt(toLocalDateTime(rs.getTimestamp("created_at")))
+                        .validationErrors(fromJsonList(rs.getString("validation_message")))
+                        .diffSummary(fromJsonObject(rs.getString("diff_json")))
+                        .build(),
+                packageId
+        );
+        if (response == null) {
+            throw new BusinessException("完整整理包不存在");
+        }
+        List<DataUploadSheetSummaryResponse> summaries = jdbcTemplate.query("""
+                        SELECT sheet_name,
+                               COUNT(*) AS total_rows,
+                               SUM(CASE WHEN row_status <> 'ERROR' THEN 1 ELSE 0 END) AS valid_rows,
+                               SUM(CASE WHEN row_status = 'WARNING' THEN 1 ELSE 0 END) AS warning_rows,
+                               SUM(CASE WHEN row_status = 'ERROR' THEN 1 ELSE 0 END) AS error_rows
+                        FROM data_upload_rows
+                        WHERE review_package_id = ?
+                        GROUP BY sheet_name
+                        """,
+                (rs, rowNum) -> DataUploadSheetSummaryResponse.builder()
+                        .sheetName(rs.getString("sheet_name"))
+                        .totalRows(rs.getInt("total_rows"))
+                        .validRows(rs.getInt("valid_rows"))
+                        .warningRows(rs.getInt("warning_rows"))
+                        .errorRows(rs.getInt("error_rows"))
+                        .build(),
+                packageId
+        );
+        Map<String, DataUploadSheetSummaryResponse> byName = new LinkedHashMap<>();
+        summaries.forEach(summary -> byName.put(summary.getSheetName(), summary));
+        response.setSheetSummaries(REVIEW_PACKAGE_SHEETS.stream()
+                .map(sheet -> byName.getOrDefault(sheet, DataUploadSheetSummaryResponse.builder()
+                        .sheetName(sheet)
+                        .totalRows(0)
+                        .validRows(0)
+                        .warningRows(0)
+                        .errorRows(0)
+                        .build()))
+                .toList());
+        return response;
+    }
+
+    private void validateSubmissionCoverage(Long uploadId,
+                                            List<ParsedRow> reviewRows,
+                                            List<String> headerErrors) {
+        Map<String, Integer> submissionCounts = new LinkedHashMap<>();
+        jdbcTemplate.query("""
+                        SELECT row_fingerprint, COUNT(*) AS row_count
+                        FROM data_upload_rows
+                        WHERE upload_id = ?
+                          AND row_stage = 'SUBMISSION'
+                          AND sheet_name = '数据表'
+                          AND row_fingerprint IS NOT NULL
+                        GROUP BY row_fingerprint
+                        """,
+                rs -> {
+                    submissionCounts.put(rs.getString("row_fingerprint"), rs.getInt("row_count"));
+                },
+                uploadId
+        );
+        Map<String, Integer> packageCounts = new LinkedHashMap<>();
+        reviewRows.stream()
+                .filter(row -> DATA_SHEET_NAME.equals(row.sheetName()))
+                .map(row -> submissionRowFingerprint(row.data()))
+                .forEach(fingerprint -> packageCounts.merge(fingerprint, 1, Integer::sum));
+
+        int missingRows = 0;
+        for (Map.Entry<String, Integer> entry : submissionCounts.entrySet()) {
+            int available = packageCounts.getOrDefault(entry.getKey(), 0);
+            if (available < entry.getValue()) {
+                missingRows += entry.getValue() - available;
+            }
+        }
+        if (missingRows > 0) {
+            headerErrors.add("完整整理包的数据表缺少原始提交中的 " + missingRows
+                    + " 行；请保留提交数据后再生成完整整理包");
+        }
+    }
+
+    private Map<String, Object> buildProductionDiffSummary(List<ParsedRow> rows) {
+        Map<String, String> productionTables = new LinkedHashMap<>();
+        productionTables.put(DATA_SHEET_NAME, "measurements");
+        productionTables.put(SITE_SHEET_NAME, "reported_sites");
+        productionTables.put(ICD11_SHEET_NAME, "icd11_sankey_paths");
+        productionTables.put(LITERATURE_SHEET_NAME, "literatures");
+
+        Map<String, Object> sheets = new LinkedHashMap<>();
+        boolean highRisk = false;
+        for (String sheetName : REVIEW_PACKAGE_SHEETS) {
+            long incoming = rows.stream().filter(row -> sheetName.equals(row.sheetName())).count();
+            long current = productionTables.containsKey(sheetName)
+                    ? safeTableCount(productionTables.get(sheetName))
+                    : latestSyncedEvidenceCount(sheetName);
+            long delta = incoming - current;
+            double decreaseRatio = current > 0 && incoming < current
+                    ? (double) (current - incoming) / current
+                    : 0.0;
+            boolean sheetHighRisk = current > 0 && decreaseRatio > 0.20;
+            highRisk = highRisk || sheetHighRisk;
+            Map<String, Object> sheet = new LinkedHashMap<>();
+            sheet.put("currentRows", current);
+            sheet.put("incomingRows", incoming);
+            sheet.put("deltaRows", delta);
+            sheet.put("decreasePercent", BigDecimal.valueOf(decreaseRatio * 100)
+                    .setScale(1, RoundingMode.HALF_UP));
+            sheet.put("highRisk", sheetHighRisk);
+            sheets.put(sheetName, sheet);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("riskLevel", highRisk ? "HIGH" : "NORMAL");
+        summary.put("sheets", sheets);
+        summary.put("generatedAt", LocalDateTime.now().toString());
+        return summary;
+    }
+
+    private long latestSyncedEvidenceCount(String sheetName) {
+        if (!tableExists("data_upload_rows") || !tableExists("data_upload_batches")) return 0L;
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM data_upload_rows r
+                WHERE r.sheet_name = ?
+                  AND r.row_stage = 'REVIEW_PACKAGE'
+                  AND r.review_package_id = (
+                      SELECT b.approved_package_id
+                      FROM data_upload_batches b
+                      WHERE b.status = 'SYNCED'
+                        AND b.approved_package_id IS NOT NULL
+                      ORDER BY b.synced_at DESC, b.upload_id DESC
+                      LIMIT 1
+                  )
+                """, Long.class, sheetName);
+        return count == null ? 0L : count;
+    }
+
+    private long safeTableCount(String tableName) {
+        if (tableName == null || !tableExists(tableName)) return 0L;
+        Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM " + tableName, Long.class);
+        return count == null ? 0L : count;
+    }
+
+    private void insertAuditEvent(Long uploadId,
+                                  Long packageId,
+                                  String action,
+                                  Long actorId,
+                                  String fromStatus,
+                                  String toStatus,
+                                  String note,
+                                  Object detail) {
+        jdbcTemplate.update("""
+                        INSERT INTO data_upload_audit_events (
+                            upload_id, package_id, action, actor_id,
+                            from_status, to_status, note, detail_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                uploadId,
+                packageId,
+                action,
+                actorId,
+                fromStatus,
+                toStatus,
+                note,
+                detail == null ? null : toJson(detail)
+        );
     }
 
     private Long insertBatch(String fileName,
@@ -2193,26 +3461,61 @@ public class DataUploadService {
     }
 
     private Long insertUploadRow(Long uploadId, ParsedRow row) {
+        return insertUploadRow(uploadId, null, "SUBMISSION", row);
+    }
+
+    private Long insertReviewPackageRow(Long uploadId, Long packageId, ParsedRow row) {
+        return insertUploadRow(uploadId, packageId, "REVIEW_PACKAGE", row);
+    }
+
+    private Long insertUploadRow(Long uploadId,
+                                 Long reviewPackageId,
+                                 String rowStage,
+                                 ParsedRow row) {
         return insertAndReturnKey("""
                         INSERT INTO data_upload_rows (
                             upload_id,
+                            review_package_id,
+                            row_stage,
                             sheet_name,
                             excel_row_number,
                             row_status,
                             raw_json,
                             error_json,
-                            warning_json
+                            warning_json,
+                            row_fingerprint
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 uploadId,
+                reviewPackageId,
+                rowStage,
                 row.sheetName(),
                 row.excelRowNumber(),
                 row.status(),
                 toJson(row.data()),
                 toJson(row.errors()),
-                toJson(row.warnings())
+                toJson(row.warnings()),
+                DATA_SHEET_NAME.equals(row.sheetName()) ? submissionRowFingerprint(row.data()) : null
         );
+    }
+
+    private String submissionRowFingerprint(Map<String, String> data) {
+        List<String> stableFields = List.of(
+                "文献编号", "DOI", "药物", "生物标记物名称", "biomarker", "生物标记物CAS",
+                "采样方法", "分析方法", "污水厂名称", "污水厂位置_国", "污水厂位置_省",
+                "污水厂位置_市", "样品采集时间", "采样开始时间_YYYY_MM", "采样结束时间_YYYY_MM",
+                "做图浓度_value", "做图浓度_unit", "PNDL_value", "PNDL_unit",
+                "来源工作簿说明", "原表行号说明"
+        );
+        StringBuilder canonical = new StringBuilder("wbe-submission-row-v1");
+        for (String field : stableFields) {
+            canonical.append('\u001F')
+                    .append(field)
+                    .append('=')
+                    .append(normalizeCell(data.get(field)).toLowerCase(Locale.ROOT));
+        }
+        return sha256(canonical.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private Long insertAndReturnKey(String sql, Object... args) {
@@ -2224,9 +3527,24 @@ public class DataUploadService {
             }
             return statement;
         }, keyHolder);
-        Number key = keyHolder.getKey();
+        Map<String, Object> keys = keyHolder.getKeys();
+        Number key = null;
+        if (keys != null) {
+            key = keys.entrySet().stream()
+                    .filter(entry -> entry.getKey().toLowerCase(Locale.ROOT).endsWith("_id"))
+                    .map(Map.Entry::getValue)
+                    .filter(Number.class::isInstance)
+                    .map(Number.class::cast)
+                    .findFirst()
+                    .orElse(null);
+        }
+        if (key == null && keyHolder.getKeyList().size() == 1
+                && keyHolder.getKeyList().get(0).size() == 1) {
+            key = keyHolder.getKey();
+        }
         if (key == null) {
-            throw new BusinessException("数据库未返回新增记录 ID");
+            LOGGER.error("数据保存后未返回新增记录 ID");
+            throw new BusinessException("数据保存未完成，请稍后重试");
         }
         return key.longValue();
     }
@@ -2273,7 +3591,10 @@ public class DataUploadService {
                         FROM data_upload_batches b
                         JOIN users u ON u.user_id = b.uploaded_by
                         LEFT JOIN users reviewer ON reviewer.user_id = b.reviewed_by
+                        LEFT JOIN users source_reviewer ON source_reviewer.user_id = b.source_reviewed_by
                         LEFT JOIN users syncer ON syncer.user_id = b.synced_by
+                        LEFT JOIN data_upload_review_packages current_package
+                            ON current_package.package_id = b.current_package_id
                         WHERE b.upload_id = ?
                         """.formatted(batchSelectSql()),
                 batchMapper(),
@@ -2294,7 +3615,9 @@ public class DataUploadService {
                             rs.getString("stored_file_path"),
                             rs.getLong("uploaded_by"),
                             rs.getString("status"),
-                            (Long) rs.getObject("reviewed_by")
+                            (Long) rs.getObject("reviewed_by"),
+                            (Long) rs.getObject("current_package_id"),
+                            (Long) rs.getObject("approved_package_id")
                     ),
                     uploadId
             );
@@ -2317,7 +3640,9 @@ public class DataUploadService {
                             rs.getString("stored_file_path"),
                             rs.getLong("uploaded_by"),
                             rs.getString("status"),
-                            (Long) rs.getObject("reviewed_by")
+                            (Long) rs.getObject("reviewed_by"),
+                            (Long) rs.getObject("current_package_id"),
+                            (Long) rs.getObject("approved_package_id")
                     ),
                     uploadId
             );
@@ -2349,6 +3674,20 @@ public class DataUploadService {
                 .reviewNote(rs.getString("review_note"))
                 .syncedBy((Long) rs.getObject("synced_by"))
                 .syncedByName(rs.getString("synced_by_name"))
+                .syncErrorMessage(rs.getString("sync_error_message"))
+                .sourceReviewedBy((Long) rs.getObject("source_reviewed_by"))
+                .sourceReviewedByName(rs.getString("source_reviewed_by_name"))
+                .sourceReviewedAt(toLocalDateTime(rs.getTimestamp("source_reviewed_at")))
+                .sourceReviewNote(rs.getString("source_review_note"))
+                .currentPackageId((Long) rs.getObject("current_package_id"))
+                .currentPackageVersion((Integer) rs.getObject("current_package_version"))
+                .currentPackageFileName(rs.getString("current_package_file_name"))
+                .currentPackageStatus(rs.getString("current_package_status"))
+                .currentPackageRows((Integer) rs.getObject("current_package_rows"))
+                .approvedPackageId((Long) rs.getObject("approved_package_id"))
+                .reviewChecklistComplete(rs.getString("review_checklist_json") != null)
+                .currentRevisionNo((Integer) rs.getObject("current_revision_no"))
+                .publishedReleaseId((Long) rs.getObject("published_release_id"))
                 .build();
     }
 
@@ -2358,7 +3697,12 @@ public class DataUploadService {
                        u.username AS uploaded_by_name,
                        u.role AS uploaded_by_role,
                        reviewer.username AS reviewed_by_name,
-                       syncer.username AS synced_by_name
+                       source_reviewer.username AS source_reviewed_by_name,
+                       syncer.username AS synced_by_name,
+                       current_package.version_no AS current_package_version,
+                       current_package.file_name AS current_package_file_name,
+                       current_package.status AS current_package_status,
+                       current_package.total_rows AS current_package_rows
                 """;
     }
 
@@ -2373,6 +3717,8 @@ public class DataUploadService {
     private RowMapper<DataUploadRowResponse> rowMapper() {
         return (rs, rowNum) -> DataUploadRowResponse.builder()
                 .rowId(rs.getLong("row_id"))
+                .rowStage(rs.getString("row_stage"))
+                .reviewPackageId((Long) rs.getObject("review_package_id"))
                 .sheetName(rs.getString("sheet_name"))
                 .excelRowNumber(rs.getInt("excel_row_number"))
                 .status(rs.getString("row_status"))
@@ -2388,6 +3734,7 @@ public class DataUploadService {
     private DataUploadRowResponse toRowResponse(Long rowId, ParsedRow row, Long syncedMeasurementId) {
         return DataUploadRowResponse.builder()
                 .rowId(rowId)
+                .rowStage("SUBMISSION")
                 .sheetName(row.sheetName())
                 .excelRowNumber(row.excelRowNumber())
                 .status(row.status())
@@ -2406,7 +3753,8 @@ public class DataUploadService {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (IOException ex) {
-            throw new BusinessException("JSON 序列化失败");
+            LOGGER.error("上传数据序列化失败", ex);
+            throw new BusinessException("数据处理未完成，请稍后重试");
         }
     }
 
@@ -2416,6 +3764,18 @@ public class DataUploadService {
         }
         try {
             return objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, String>>() {
+            });
+        } catch (IOException ex) {
+            return Map.of();
+        }
+    }
+
+    private Map<String, Object> fromJsonObject(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {
             });
         } catch (IOException ex) {
             return Map.of();
@@ -2440,7 +3800,7 @@ public class DataUploadService {
             return;
         }
         try {
-            ClassPathResource script = new ClassPathResource("db/map_pndl_stats_refresh.sql");
+            ClassPathResource script = new ClassPathResource("db/map_pndl_stats_refresh_v2.sql");
             if (!script.exists()) {
                 throw new BusinessException("未找到地图聚合刷新脚本");
             }
@@ -2448,11 +3808,15 @@ public class DataUploadService {
             populator.addScript(script);
             populator.execute(dataSource);
         } catch (Exception ex) {
-            throw new BusinessException("地图聚合刷新失败：" + ex.getMessage());
+            LOGGER.error("地图聚合刷新失败", ex);
+            throw new BusinessException("地图数据更新未完成，请稍后重试");
         }
     }
 
     private record StoredFile(Path path) {
+    }
+
+    private record StagedFile(Path path, String sha256) {
     }
 
     private record ParsedWorkbook(List<String> headerErrors, List<ParsedRow> rows) {
@@ -2478,7 +3842,13 @@ public class DataUploadService {
         }
     }
 
-    private record BatchRecord(Long uploadId, String fileName, String storedFilePath, Long uploadedBy,
-                               String status, Long reviewedBy) {
+    private record BatchRecord(Long uploadId,
+                               String fileName,
+                               String storedFilePath,
+                               Long uploadedBy,
+                               String status,
+                               Long reviewedBy,
+                               Long currentPackageId,
+                               Long approvedPackageId) {
     }
 }

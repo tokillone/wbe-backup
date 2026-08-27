@@ -18,4 +18,5 @@ public class DataUploadPreviewResponse {
     private List<DataUploadRowResponse> previewRows;
     private List<DataUploadSheetSummaryResponse> sheetSummaries;
     private Map<String, List<DataUploadRowResponse>> previewRowsBySheet;
+    private List<String> requiredReviewSheets;
 }

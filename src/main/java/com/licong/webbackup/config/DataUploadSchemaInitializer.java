@@ -70,6 +70,8 @@ public class DataUploadSchemaInitializer {
                         REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传原始行与校验结果表'
                 """);
+        ensureReviewWorkflowSchema();
+        ensureSimplifiedSubmissionWorkflowSchema();
         ensureWorkbookUploadSchema();
         jdbcTemplate.update("""
                 UPDATE data_upload_batches
@@ -78,7 +80,6 @@ public class DataUploadSchemaInitializer {
                 """);
         ensureBusinessUploadTraceSchema();
         ensureReportedSiteSchema();
-        backfillReportedSites();
     }
 
     private void ensureWorkbookUploadSchema() {
@@ -114,11 +115,12 @@ public class DataUploadSchemaInitializer {
                 CREATE TABLE IF NOT EXISTS home_target_records (
                     record_id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     literature_id VARCHAR(50) NOT NULL,
-                    doi VARCHAR(200) NOT NULL,
+                    doi VARCHAR(200) NULL,
                     target_category VARCHAR(100) NOT NULL,
                     target_group VARCHAR(20) NOT NULL,
                     substance_category VARCHAR(100) NOT NULL,
                     substance_subclass VARCHAR(100) NOT NULL,
+                    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
                     biomarker_name VARCHAR(300) NOT NULL,
                     source_sheet VARCHAR(64) NOT NULL DEFAULT '数据表',
                     source_row_number INT NOT NULL,
@@ -138,6 +140,7 @@ public class DataUploadSchemaInitializer {
                     target_category VARCHAR(160) NOT NULL,
                     substance_category VARCHAR(180) NOT NULL,
                     substance_subclass VARCHAR(180) NOT NULL,
+                    substance_fine VARCHAR(180) NULL COMMENT '目标物质细类',
                     drug_name VARCHAR(300) NOT NULL,
                     indication_original TEXT,
                     biomarker_name VARCHAR(300) NOT NULL,
@@ -172,6 +175,10 @@ public class DataUploadSchemaInitializer {
                     INDEX idx_icd11_sankey_biomarker (target_category, biomarker_name)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='ICD11疾病映射与可变层级桑基图路径源表'
                 """);
+        ensureTableColumn("home_target_records", "substance_fine",
+                "VARCHAR(180) NULL COMMENT '目标物质细类'");
+        ensureTableColumn("icd11_sankey_paths", "substance_fine",
+                "VARCHAR(180) NULL COMMENT '目标物质细类'");
         ensureTableColumn("icd11_sankey_paths", "in_sankey",
                 "BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否进入桑基图'");
         ensureTableColumn("icd11_sankey_paths", "exclusion_reason",
@@ -227,6 +234,170 @@ public class DataUploadSchemaInitializer {
         ensureDataUploadBatchColumn("synced_by", "BIGINT NULL COMMENT '同步人'");
     }
 
+    private void ensureReviewWorkflowSchema() {
+        ensureDataUploadBatchColumn("source_reviewed_by", "BIGINT NULL COMMENT '原始提交初审人'");
+        ensureDataUploadBatchColumn("source_reviewed_at", "DATETIME NULL COMMENT '原始提交初审时间'");
+        ensureDataUploadBatchColumn("source_review_note", "VARCHAR(500) NULL COMMENT '原始提交初审备注'");
+        ensureDataUploadBatchColumn("current_package_id", "BIGINT NULL COMMENT '当前完整整理包'");
+        ensureDataUploadBatchColumn("approved_package_id", "BIGINT NULL COMMENT '终审通过的完整整理包'");
+        ensureDataUploadBatchColumn("review_checklist_json", "LONGTEXT NULL COMMENT '终审检查项快照'");
+        ensureDataUploadBatchColumn("review_diff_json", "LONGTEXT NULL COMMENT '终审时生产差异摘要'");
+        ensureDataUploadBatchColumn("sync_error_message", "VARCHAR(500) NULL COMMENT '最近一次同步失败原因'");
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_review_packages (
+                    package_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    version_no INT NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    stored_file_path VARCHAR(500) NULL,
+                    sha256 VARCHAR(64) NOT NULL,
+                    uploaded_by BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    total_rows INT NOT NULL DEFAULT 0,
+                    valid_rows INT NOT NULL DEFAULT 0,
+                    error_rows INT NOT NULL DEFAULT 0,
+                    warning_rows INT NOT NULL DEFAULT 0,
+                    validation_message LONGTEXT NULL,
+                    diff_json LONGTEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_review_package_version (upload_id, version_no),
+                    INDEX idx_review_package_batch (upload_id, created_at),
+                    INDEX idx_review_package_sha (sha256),
+                    INDEX idx_review_package_uploader (uploaded_by),
+                    CONSTRAINT fk_review_package_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_review_package_user FOREIGN KEY (uploaded_by)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='上传批次完整整理包版本'
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_audit_events (
+                    event_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    package_id BIGINT NULL,
+                    action VARCHAR(48) NOT NULL,
+                    actor_id BIGINT NOT NULL,
+                    from_status VARCHAR(32) NULL,
+                    to_status VARCHAR(32) NULL,
+                    note VARCHAR(500) NULL,
+                    detail_json LONGTEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_upload_audit_batch (upload_id, created_at),
+                    INDEX idx_upload_audit_package (package_id),
+                    INDEX idx_upload_audit_actor (actor_id),
+                    CONSTRAINT fk_upload_audit_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_upload_audit_package FOREIGN KEY (package_id)
+                        REFERENCES data_upload_review_packages(package_id) ON DELETE SET NULL,
+                    CONSTRAINT fk_upload_audit_actor FOREIGN KEY (actor_id)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据上传工作流审计事件'
+                """);
+
+        ensureTableColumn("data_upload_rows", "row_stage",
+                "VARCHAR(24) NOT NULL DEFAULT 'SUBMISSION' COMMENT '提交数据或整理包数据'");
+        ensureTableColumn("data_upload_rows", "review_package_id",
+                "BIGINT NULL COMMENT '完整整理包版本'");
+        ensureTableColumn("data_upload_rows", "row_fingerprint",
+                "VARCHAR(64) NULL COMMENT '稳定行指纹'");
+        ensureIndex("data_upload_rows", "idx_data_upload_rows_stage", """
+                CREATE INDEX idx_data_upload_rows_stage
+                ON data_upload_rows(upload_id, row_stage, review_package_id, sheet_name, excel_row_number)
+                """);
+        ensureIndex("data_upload_rows", "idx_data_upload_rows_fingerprint", """
+                CREATE INDEX idx_data_upload_rows_fingerprint
+                ON data_upload_rows(upload_id, row_stage, row_fingerprint)
+                """);
+    }
+
+    private void ensureSimplifiedSubmissionWorkflowSchema() {
+        ensureDataUploadBatchColumn("current_revision_no",
+                "INT NOT NULL DEFAULT 1 COMMENT '当前投稿版本'");
+        ensureDataUploadBatchColumn("published_release_id",
+                "BIGINT NULL COMMENT '成功发布的数据集版本'");
+        ensureTableColumn("data_upload_rows", "submission_row_id",
+                "VARCHAR(64) NULL COMMENT '跨投稿版本保持不变的行ID'");
+        ensureTableColumn("data_upload_rows", "submission_version",
+                "INT NOT NULL DEFAULT 1 COMMENT '投稿版本号'");
+        ensureIndex("data_upload_rows", "idx_submission_active_rows", """
+                CREATE INDEX idx_submission_active_rows
+                ON data_upload_rows(upload_id, row_stage, submission_version, submission_row_id)
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_submission_revisions (
+                    revision_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    version_no INT NOT NULL,
+                    file_name VARCHAR(255) NOT NULL,
+                    stored_file_path VARCHAR(500) NOT NULL,
+                    sha256 VARCHAR(64) NOT NULL,
+                    submitted_by BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    total_rows INT NOT NULL DEFAULT 0,
+                    valid_rows INT NOT NULL DEFAULT 0,
+                    error_rows INT NOT NULL DEFAULT 0,
+                    validation_message LONGTEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_submission_revision (upload_id, version_no),
+                    INDEX idx_submission_revision_sha (sha256),
+                    CONSTRAINT fk_submission_revision_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_submission_revision_user FOREIGN KEY (submitted_by)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='普通用户投稿版本'
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS data_upload_field_changes (
+                    change_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    package_id BIGINT NOT NULL,
+                    submission_row_id VARCHAR(64) NOT NULL,
+                    field_name VARCHAR(160) NOT NULL,
+                    old_value LONGTEXT NULL,
+                    new_value LONGTEXT NULL,
+                    reason VARCHAR(500) NOT NULL,
+                    changed_by BIGINT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_field_change_row (upload_id, submission_row_id),
+                    INDEX idx_field_change_package (package_id),
+                    CONSTRAINT fk_field_change_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_field_change_package FOREIGN KEY (package_id)
+                        REFERENCES data_upload_review_packages(package_id) ON DELETE CASCADE,
+                    CONSTRAINT fk_field_change_user FOREIGN KEY (changed_by)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审核字段级纠正审计'
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS dataset_releases (
+                    release_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    package_id BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    published_by BIGINT NOT NULL,
+                    inserted_records INT NOT NULL DEFAULT 0,
+                    skipped_records INT NOT NULL DEFAULT 0,
+                    manifest_json LONGTEXT NULL,
+                    error_message VARCHAR(500) NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    published_at DATETIME NULL,
+                    UNIQUE KEY uk_dataset_release_upload (upload_id),
+                    INDEX idx_dataset_release_status (status),
+                    CONSTRAINT fk_dataset_release_batch FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE RESTRICT,
+                    CONSTRAINT fk_dataset_release_package FOREIGN KEY (package_id)
+                        REFERENCES data_upload_review_packages(package_id) ON DELETE RESTRICT,
+                    CONSTRAINT fk_dataset_release_user FOREIGN KEY (published_by)
+                        REFERENCES users(user_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='增量数据集发布版本'
+                """);
+    }
+
     private void ensureDataUploadBatchColumn(String columnName, String columnDefinition) {
         Integer columnCount = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*)
@@ -272,6 +443,8 @@ public class DataUploadSchemaInitializer {
             ensureTableColumn("measurements", "literature_code", "VARCHAR(255) NULL COMMENT '文献编号'");
             ensureTableColumn("measurements", "raw_payload", "LONGTEXT NULL COMMENT '上传行原始JSON'");
             ensureTableColumn("measurements", "dedupe_key", "VARCHAR(128) NULL COMMENT '业务重复判断键'");
+            ensureTableColumn("measurements", "record_key", "VARCHAR(128) NULL COMMENT '跨批次稳定业务键'");
+            ensureTableColumn("measurements", "dataset_release_id", "BIGINT NULL COMMENT '发布版本'");
             ensureIndex("measurements", "idx_measurements_upload_trace", """
                     CREATE INDEX idx_measurements_upload_trace
                     ON measurements(upload_id, upload_row_id)
@@ -284,10 +457,32 @@ public class DataUploadSchemaInitializer {
                     CREATE UNIQUE INDEX uk_measurements_dedupe_key
                     ON measurements(dedupe_key)
                     """);
+            ensureIndex("measurements", "uk_measurements_record_key", """
+                    CREATE UNIQUE INDEX uk_measurements_record_key
+                    ON measurements(record_key)
+                    """);
+            ensureIndex("measurements", "idx_measurements_release", """
+                    CREATE INDEX idx_measurements_release
+                    ON measurements(dataset_release_id)
+                    """);
+        }
+
+        if (tableExists("home_target_records")) {
+            makeHomeTargetDoiNullable();
+            ensureTableColumn("home_target_records", "published_measurement_id",
+                    "BIGINT NULL COMMENT '对应正式测量记录'");
+            dropIndexIfExists("home_target_records", "uk_home_target_source_row");
+            ensureIndex("home_target_records", "uk_home_target_measurement", """
+                    CREATE UNIQUE INDEX uk_home_target_measurement
+                    ON home_target_records(published_measurement_id)
+                    """);
         }
 
         if (tableExists("compounds")) {
+            ensureTableColumn("compounds", "substance_fine",
+                    "VARCHAR(180) NULL COMMENT '目标物质细类'");
             dropIndexIfExists("compounds", "uk_drug_name");
+            dropIndexIfExists("compounds", "idx_compound_upload_signature");
             ensureIndex("compounds", "idx_compound_upload_signature", """
                     CREATE INDEX idx_compound_upload_signature
                     ON compounds(
@@ -295,6 +490,7 @@ public class DataUploadSchemaInitializer {
                         target_category(60),
                         substance_category(60),
                         substance_subclass(60),
+                        substance_fine(60),
                         biomarker_name(80),
                         biomarker_cas(50)
                     )
@@ -326,6 +522,20 @@ public class DataUploadSchemaInitializer {
                     CREATE UNIQUE INDEX uk_plant_location
                     ON wastewater_plants(plant_name(120), country(80), province(80), city(80))
                     """);
+        }
+    }
+
+    private void makeHomeTargetDoiNullable() {
+        Integer nullableCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'home_target_records'
+                  AND column_name = 'doi'
+                  AND is_nullable = 'YES'
+                """, Integer.class);
+        if (nullableCount == null || nullableCount == 0) {
+            jdbcTemplate.execute("ALTER TABLE home_target_records MODIFY COLUMN doi VARCHAR(200) NULL");
         }
     }
 
@@ -376,6 +586,24 @@ public class DataUploadSchemaInitializer {
                         REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文献内报告的污水厂或采样点位'
                 """);
+        ensureTableColumn("reported_sites", "doi",
+                "VARCHAR(255) NULL COMMENT '点位关联表中的 DOI'");
+        ensureTableColumn("reported_sites", "canonical_plant_name",
+                "VARCHAR(500) NULL COMMENT '规范污水厂名称，仅用于展示和同文献精确关联'");
+        ensureTableColumn("reported_sites", "include_in_point_count",
+                "BOOLEAN NOT NULL DEFAULT TRUE COMMENT '是否计入地图点位覆盖数'");
+        ensureTableColumn("reported_sites", "site_note",
+                "TEXT NULL COMMENT '点位说明或排除原因'");
+        ensureTableColumn("reported_sites", "upload_id",
+                "BIGINT NULL COMMENT '来源上传批次'");
+        ensureTableColumn("reported_sites", "upload_row_id",
+                "BIGINT NULL COMMENT '来源上传行'");
+        ensureTableColumn("reported_sites", "excel_row_number",
+                "INT NULL COMMENT '点位关联表原始行号'");
+        ensureIndex("reported_sites", "idx_reported_sites_upload", """
+                CREATE INDEX idx_reported_sites_upload
+                ON reported_sites(upload_id, upload_row_id)
+                """);
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS reported_site_confirmation_audit (
                     audit_id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -395,6 +623,65 @@ public class DataUploadSchemaInitializer {
                     CONSTRAINT fk_site_confirmation_confirmed FOREIGN KEY (confirmed_site_id)
                         REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='跨文献真实点位人工确认审计'
+                """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS approved_confirmed_site_ids (
+                    confirmed_site_id VARCHAR(80) PRIMARY KEY,
+                    approved_by BIGINT NULL,
+                    approved_at DATETIME NOT NULL,
+                    approval_note TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_approved_confirmed_site FOREIGN KEY (confirmed_site_id)
+                        REFERENCES confirmed_sites(confirmed_site_id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='允许跨文献合并的人工批准白名单（当前功能关闭）'
+                """);
+        if (tableExists("measurements")) {
+            jdbcTemplate.execute("""
+                    CREATE TABLE IF NOT EXISTS record_site_bridge (
+                        bridge_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                        upload_id BIGINT NULL,
+                        upload_row_id BIGINT NULL,
+                        excel_row_number INT NULL,
+                        internal_record_key VARCHAR(160) NOT NULL,
+                        measurement_id BIGINT NOT NULL,
+                        reported_site_key CHAR(64) NULL,
+                        effective_site_key VARCHAR(160) NULL,
+                        match_status VARCHAR(64) NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uk_record_site_bridge (measurement_id, reported_site_key),
+                        INDEX idx_record_site_bridge_effective (effective_site_key),
+                        INDEX idx_record_site_bridge_status (match_status),
+                        INDEX idx_record_site_bridge_upload (upload_id, upload_row_id),
+                        CONSTRAINT fk_record_site_bridge_measurement FOREIGN KEY (measurement_id)
+                            REFERENCES measurements(measurement_id) ON DELETE CASCADE,
+                        CONSTRAINT fk_record_site_bridge_reported FOREIGN KEY (reported_site_key)
+                            REFERENCES reported_sites(reported_site_key) ON DELETE RESTRICT
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据记录与点位关联表，可表达零、一或多个点位'
+                    """);
+        }
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS site_link_import_qc (
+                    qc_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    upload_id BIGINT NOT NULL,
+                    merge_confirmed_cross_document_sites BOOLEAN NOT NULL DEFAULT FALSE,
+                    site_rows INT NOT NULL DEFAULT 0,
+                    included_sites INT NOT NULL DEFAULT 0,
+                    excluded_sites INT NOT NULL DEFAULT 0,
+                    mapped_sites INT NOT NULL DEFAULT 0,
+                    unmapped_sites INT NOT NULL DEFAULT 0,
+                    record_rows INT NOT NULL DEFAULT 0,
+                    exact_records INT NOT NULL DEFAULT 0,
+                    multi_site_records INT NOT NULL DEFAULT 0,
+                    location_fallback_records INT NOT NULL DEFAULT 0,
+                    excluded_records INT NOT NULL DEFAULT 0,
+                    unmatched_country_records INT NOT NULL DEFAULT 0,
+                    unmatched_records INT NOT NULL DEFAULT 0,
+                    report_json LONGTEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_site_link_qc_upload (upload_id),
+                    CONSTRAINT fk_site_link_qc_upload FOREIGN KEY (upload_id)
+                        REFERENCES data_upload_batches(upload_id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='点位关联导入质量核查快照'
                 """);
         if (tableExists("sampling_events")) {
             ensureTableColumn("sampling_events", "reported_site_key",

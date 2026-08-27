@@ -5,6 +5,8 @@ import com.licong.webbackup.dto.map.MapBiomarkerPropertyRow;
 import com.licong.webbackup.dto.map.MapClusterLocationRequest;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
+import com.licong.webbackup.dto.map.MapReportedSiteResponse;
+import com.licong.webbackup.dto.map.MapSiteLinkQcResponse;
 import com.licong.webbackup.dto.map.MapMetricObservationRow;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapTopBiomarkerResponse;
@@ -17,6 +19,102 @@ import java.util.List;
 
 @Mapper
 public interface MapVisualizationMapper {
+
+    @Select("""
+            <script>
+            SELECT
+              rs.reported_site_key,
+              b.effective_site_key,
+              rs.literature_code,
+              COALESCE(NULLIF(TRIM(rs.doi), ''), NULLIF(TRIM(c.doi), '')) AS doi,
+              rs.country,
+              rs.province,
+              rs.city,
+              rs.raw_plant_name,
+              rs.canonical_plant_name,
+              rs.confirmed_site_id,
+              rs.site_note,
+              GROUP_CONCAT(DISTINCT b.match_status ORDER BY b.match_status SEPARATOR '、') AS match_status,
+              COUNT(DISTINCT m.measurement_id) AS record_count
+            FROM record_site_bridge b
+            JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+              AND rs.include_in_point_count = TRUE
+            JOIN measurements m ON m.measurement_id = b.measurement_id
+            JOIN compounds c ON c.compound_id = m.compound_id
+            JOIN sampling_events se ON se.event_id = m.event_id
+            JOIN geo_locations gl ON gl.level = #{level} AND gl.geo_key = #{geoKey}
+              AND (
+                (#{level} = 'country' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country)))
+                OR (#{level} = 'admin1' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                  AND LOWER(TRIM(rs.province)) = LOWER(TRIM(gl.province)))
+                OR (#{level} = 'city' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                  AND LOWER(TRIM(rs.city)) = LOWER(TRIM(gl.city)))
+              )
+            WHERE b.effective_site_key IS NOT NULL
+              AND (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
+              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
+              AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
+              AND (#{biomarkerKey} = 'ALL'
+                OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
+              AND (#{year} = '全部年份'
+                OR COALESCE(
+                  CASE WHEN LEFT(TRIM(se.sampling_start_ym), 4) REGEXP '^[0-9]{4}$' THEN LEFT(TRIM(se.sampling_start_ym), 4) END,
+                  CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
+                  '未标注年份'
+                ) = #{year})
+            GROUP BY rs.reported_site_key, b.effective_site_key, rs.literature_code,
+              doi, rs.country, rs.province, rs.city, rs.raw_plant_name,
+              rs.canonical_plant_name, rs.confirmed_site_id, rs.site_note
+            ORDER BY rs.literature_code, COALESCE(rs.canonical_plant_name, rs.raw_plant_name), rs.reported_site_key
+            LIMIT #{limit}
+            </script>
+            """)
+    List<MapReportedSiteResponse> findRegionSites(@Param("level") String level,
+                                                  @Param("geoKey") String geoKey,
+                                                  @Param("category") String category,
+                                                  @Param("targetClass") String targetClass,
+                                                  @Param("subcategory") String subcategory,
+                                                  @Param("biomarkerKey") String biomarkerKey,
+                                                  @Param("year") String year,
+                                                  @Param("limit") int limit);
+
+    @Select("""
+            SELECT upload_id, merge_confirmed_cross_document_sites,
+              site_rows, included_sites, excluded_sites, mapped_sites, unmapped_sites,
+              record_rows, exact_records, multi_site_records, location_fallback_records,
+              excluded_records, unmatched_country_records, unmatched_records, created_at
+            FROM site_link_import_qc
+            ORDER BY created_at DESC, qc_id DESC
+            LIMIT 1
+            """)
+    MapSiteLinkQcResponse findLatestSiteLinkQc();
+
+    @Select("""
+            SELECT
+              rs.reported_site_key,
+              CONCAT('reported:', rs.reported_site_key) AS effective_site_key,
+              rs.literature_code,
+              rs.doi,
+              rs.country,
+              rs.province,
+              rs.city,
+              rs.raw_plant_name,
+              rs.canonical_plant_name,
+              rs.confirmed_site_id,
+              rs.site_note,
+              '未映射到数据记录' AS match_status,
+              0 AS record_count
+            FROM reported_sites rs
+            WHERE rs.upload_id = #{uploadId}
+              AND rs.include_in_point_count = TRUE
+              AND NOT EXISTS (
+                SELECT 1 FROM record_site_bridge b
+                WHERE b.reported_site_key = rs.reported_site_key
+                  AND b.effective_site_key IS NOT NULL
+              )
+            ORDER BY rs.literature_code, rs.reported_site_key
+            """)
+    List<MapReportedSiteResponse> findUnmappedSites(@Param("uploadId") Long uploadId);
 
     @Select("""
             SELECT
@@ -794,20 +892,26 @@ public interface MapVisualizationMapper {
               FROM measurements m
               JOIN compounds c ON c.compound_id = m.compound_id
               JOIN sampling_events se ON se.event_id = m.event_id
-              JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-              JOIN geo_locations gl ON gl.level = #{level}
-                AND gl.geo_key = #{geoKey}
-                AND (
-                  (#{level} = 'country' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country)))
-                  OR (#{level} = 'admin1' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                    AND LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province)))
-                  OR (#{level} = 'city' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                    AND LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city)))
-                )
               WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
                 AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
                 AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
                 AND COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey}
+                AND EXISTS (
+                  SELECT 1
+                  FROM record_site_bridge b
+                  JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+                    AND rs.include_in_point_count = TRUE
+                  JOIN geo_locations gl ON gl.level = #{level} AND gl.geo_key = #{geoKey}
+                  WHERE b.measurement_id = m.measurement_id
+                    AND b.effective_site_key IS NOT NULL
+                    AND (
+                      (#{level} = 'country' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country)))
+                      OR (#{level} = 'admin1' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                        AND LOWER(TRIM(rs.province)) = LOWER(TRIM(gl.province)))
+                      OR (#{level} = 'city' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                        AND LOWER(TRIM(rs.city)) = LOWER(TRIM(gl.city)))
+                    )
+                )
             ), observations AS (
               SELECT 'pndl' AS metric_key, 'PNDL' AS metric_label, 'mg/day/1000 inh' AS unit,
                 sample_year AS year,
@@ -872,22 +976,28 @@ public interface MapVisualizationMapper {
             FROM measurements m
             JOIN compounds c ON c.compound_id = m.compound_id
             JOIN sampling_events se ON se.event_id = m.event_id
-            JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-            JOIN geo_locations gl ON gl.level = #{level}
-              AND gl.geo_key = #{geoKey}
-              AND (
-                (#{level} = 'country' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country)))
-                OR (#{level} = 'admin1' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                  AND LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province)))
-                OR (#{level} = 'city' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                  AND LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city)))
-              )
             WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
               AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
               AND (#{biomarkerKey} = 'ALL'
                 OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
               AND NULLIF(TRIM(c.physicochemical_properties), '') IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM record_site_bridge b
+                JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+                  AND rs.include_in_point_count = TRUE
+                JOIN geo_locations gl ON gl.level = #{level} AND gl.geo_key = #{geoKey}
+                WHERE b.measurement_id = m.measurement_id
+                  AND b.effective_site_key IS NOT NULL
+                  AND (
+                    (#{level} = 'country' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country)))
+                    OR (#{level} = 'admin1' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(rs.province)) = LOWER(TRIM(gl.province)))
+                    OR (#{level} = 'city' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(rs.city)) = LOWER(TRIM(gl.city)))
+                  )
+              )
             GROUP BY c.compound_id, biomarker_key, biomarker_label, c.biomarker_cas,
               target_class, c.substance_category, c.substance_subclass, property_text
             ORDER BY record_count DESC, biomarker_label ASC
@@ -904,55 +1014,37 @@ public interface MapVisualizationMapper {
     @Select("""
             <script>
             SELECT
-              COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) AS biomarker_key,
-              COALESCE(NULLIF(TRIM(c.biomarker_name), ''), c.drug_name) AS biomarker_label,
-              MAX(c.biomarker_cas) AS biomarker_cas,
-              MIN(COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类')) AS target_class,
-              MIN(c.substance_category) AS category,
-              MIN(COALESCE(NULLIF(TRIM(c.substance_subclass), ''), '未分类')) AS subcategory,
-              COUNT(DISTINCT m.measurement_id) AS record_count,
-              COUNT(DISTINCT NULLIF(TRIM(c.doi), '')) AS doi_count,
-              COUNT(DISTINCT CASE
-                WHEN NULLIF(TRIM(rs.confirmed_site_id), '') IS NOT NULL THEN CONCAT('C:', TRIM(rs.confirmed_site_id))
-                ELSE CONCAT('R:', rs.reported_site_key)
-              END) AS point_count,
-              MAX(CASE
-                WHEN m.plot_pndl_value &gt; 0
-                  AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.plot_pndl_unit, ''),
-                    'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) REGEXP
-                    '^((mg|g|ug)/(day|d)/(1000|10000)?(inh|inhabitants|people|persons|person|capita|p|pop)|(mg|g|ug)/(1000|10000)?(inh|inhabitants|people|persons|person|capita|p|pop)/(day|d)).*$'
-                  THEN 1 ELSE 0
-              END) AS has_pndl
-            FROM measurements m
-            JOIN compounds c ON c.compound_id = m.compound_id
-            JOIN sampling_events se ON se.event_id = m.event_id
-            JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-            JOIN reported_sites rs ON rs.reported_site_key = se.reported_site_key
-            <if test="locations != null and locations.size() &gt; 0">
-              JOIN geo_locations gl ON gl.is_mappable = TRUE AND (
-                <foreach item="location" collection="locations" separator=" OR ">
-                  (gl.level = #{location.level} AND gl.geo_key = #{location.geoKey} AND (
-                    (gl.level = 'country' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country)))
-                    OR (gl.level = 'admin1' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                      AND LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province)))
-                    OR (gl.level = 'city' AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                      AND LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city)))
-                  ))
-                </foreach>
+              biomarker_key,
+              MAX(biomarker_label) AS biomarker_label,
+              MAX(biomarker_cas) AS biomarker_cas,
+              CASE WHEN COUNT(DISTINCT target_class) = 1 THEN MIN(target_class) ELSE 'ALL' END AS target_class,
+              CASE WHEN COUNT(DISTINCT category) = 1 THEN MIN(category) ELSE '全部目标物质类别' END AS category,
+              CASE WHEN COUNT(DISTINCT subcategory) = 1 THEN MIN(subcategory) ELSE '全部小类' END AS subcategory,
+              SUM(record_count) AS record_count,
+              SUM(doi_count) AS doi_count,
+              SUM(point_count) AS point_count,
+              MAX(CASE WHEN COALESCE(pndl_record_count, 0) &gt; 0 THEN 1 ELSE 0 END) AS has_pndl
+            FROM map_pndl_stats
+            WHERE biomarker_key != 'ALL'
+              AND is_mappable = TRUE
+              AND (#{category} = '全部目标物质类别'
+                OR category = #{category})
+              AND category != '全部目标物质类别'
+              AND (#{targetClass} = 'ALL' OR target_class = #{targetClass})
+              AND (
+                (#{subcategory} = '全部小类' AND subcategory = '全部小类')
+                OR (#{subcategory} != '全部小类' AND subcategory = #{subcategory})
               )
-            </if>
-            WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
-              AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
-              AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
-              AND (#{biomarkerKey} = 'ALL'
-                OR COALESCE(NULLIF(REPLACE(TRIM(c.biomarker_cas), '-', ''), ''), CAST(c.compound_id AS CHAR)) = #{biomarkerKey})
-              AND (#{year} = '全部年份'
-                OR COALESCE(
-                  CASE WHEN LEFT(TRIM(se.sampling_start_ym), 4) REGEXP '^[0-9]{4}$' THEN LEFT(TRIM(se.sampling_start_ym), 4) END,
-                  CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
-                  '未标注年份'
-                ) = #{year})
-            GROUP BY biomarker_key, biomarker_label
+              AND (#{biomarkerKey} = 'ALL' OR biomarker_key = #{biomarkerKey})
+              AND year_label = #{year}
+              <if test="locations != null and locations.size() &gt; 0">
+                AND (
+                <foreach item="location" collection="locations" separator=" OR ">
+                  (level = #{location.level} AND geo_key = #{location.geoKey})
+                </foreach>
+                )
+              </if>
+            GROUP BY biomarker_key
             ORDER BY doi_count DESC, record_count DESC, point_count DESC, biomarker_label ASC
             LIMIT #{limit}
             </script>
@@ -1064,21 +1156,6 @@ public interface MapVisualizationMapper {
             JOIN compounds c ON c.compound_id = m.compound_id
             JOIN sampling_events se ON se.event_id = m.event_id
             JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
-            JOIN geo_locations gl ON gl.level = #{level}
-              AND gl.geo_key = #{geoKey}
-              AND (
-                (#{level} = 'country'
-                  AND (LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.country), ' ', '_'), '-', '_'), '.', '')) = gl.geo_key))
-                OR (#{level} = 'admin1'
-                  AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                  AND (LOWER(TRIM(wp.province)) = LOWER(TRIM(gl.province))
-                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.province), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
-                OR (#{level} = 'city'
-                  AND LOWER(TRIM(wp.country)) = LOWER(TRIM(gl.country))
-                  AND (LOWER(TRIM(wp.city)) = LOWER(TRIM(gl.city))
-                    OR LOWER(REPLACE(REPLACE(REPLACE(TRIM(wp.city), ' ', '_'), '-', '_'), '.', '')) = SUBSTRING_INDEX(gl.geo_key, '|', -1)))
-              )
             WHERE (#{category} = '全部目标物质类别' OR TRIM(c.substance_category) = #{category})
               AND (#{targetClass} = 'ALL' OR COALESCE(NULLIF(TRIM(c.target_category), ''), '未分类') = #{targetClass})
               AND (#{subcategory} = '全部小类' OR TRIM(c.substance_subclass) = #{subcategory})
@@ -1090,6 +1167,22 @@ public interface MapVisualizationMapper {
                   CASE WHEN se.sample_collection_time IS NOT NULL THEN DATE_FORMAT(se.sample_collection_time, '%Y') END,
                   '未标注年份'
                 ) = #{year})
+              AND EXISTS (
+                SELECT 1
+                FROM record_site_bridge b
+                JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+                  AND rs.include_in_point_count = TRUE
+                JOIN geo_locations gl ON gl.level = #{level} AND gl.geo_key = #{geoKey}
+                WHERE b.measurement_id = m.measurement_id
+                  AND b.effective_site_key IS NOT NULL
+                  AND (
+                    (#{level} = 'country' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country)))
+                    OR (#{level} = 'admin1' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(rs.province)) = LOWER(TRIM(gl.province)))
+                    OR (#{level} = 'city' AND LOWER(TRIM(rs.country)) = LOWER(TRIM(gl.country))
+                      AND LOWER(TRIM(rs.city)) = LOWER(TRIM(gl.city)))
+                  )
+              )
             ORDER BY
               CASE WHEN pndl_mg_d_1000inh IS NULL OR pndl_mg_d_1000inh &lt;= 0 THEN 1 ELSE 0 END,
               pndl_mg_d_1000inh DESC,
@@ -1169,9 +1262,10 @@ public interface MapVisualizationMapper {
     long countConvertiblePndlRows();
 
     @Select("""
-            SELECT COUNT(*)
+            SELECT COUNT(DISTINCT measurement_id)
             FROM (
               SELECT
+                measurement_id,
                 country_key,
                 CASE
                   WHEN unit_key REGEXP '^mg/(day|d)/(1000(inh|inhabitants|people|persons|person|capita|p|pop))$'
@@ -1194,14 +1288,15 @@ public interface MapVisualizationMapper {
                 END AS pndl_mg_d_1000inh
               FROM (
                 SELECT
+                  m.measurement_id,
                   CASE
-                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', '')) IN ('unitedstates', 'unitedstatesofamerica', 'usa', 'us')
                       THEN 'unitedsofamerica'
-                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', '')) = 'czechrepublic'
                       THEN 'czechia'
-                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', '')) = 'vietnam'
+                    WHEN LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', '')) = 'vietnam'
                       THEN 'vietnam'
-                    ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(wp.country), ''), '[^0-9a-zA-Z]+', ''))
+                    ELSE LOWER(REGEXP_REPLACE(COALESCE(TRIM(rs.country), ''), '[^0-9a-zA-Z]+', ''))
                   END AS country_key,
                   m.plot_pndl_value AS raw_value,
                   LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -1211,8 +1306,10 @@ public interface MapVisualizationMapper {
                     ), 'μ', 'u'), 'µ', 'u'), ' ', ''), '.', ''), '-', '')) AS unit_key
                 FROM measurements m
                 JOIN compounds c ON c.compound_id = m.compound_id
-                JOIN sampling_events se ON se.event_id = m.event_id
-                JOIN wastewater_plants wp ON wp.plant_id = se.plant_id
+                JOIN record_site_bridge b ON b.measurement_id = m.measurement_id
+                  AND b.effective_site_key IS NOT NULL
+                JOIN reported_sites rs ON rs.reported_site_key = b.reported_site_key
+                  AND rs.include_in_point_count = TRUE
                 WHERE NULLIF(TRIM(c.substance_category), '') IS NOT NULL
               ) unit_rows
             ) converted_rows

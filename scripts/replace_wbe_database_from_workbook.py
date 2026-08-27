@@ -44,6 +44,7 @@ REQUIRED_HEADERS = [
     "目标类别",
     "目标物质类别",
     "目标物质子类",
+    "目标物质细类",
     "药物",
     "适应症",
     "处方/非处方",
@@ -105,6 +106,7 @@ ICD11_REQUIRED_COLUMNS = [
     "目标类别",
     "目标物质类别",
     "目标物质子类",
+    "目标物质细类",
     "药物",
     "适应症原文",
     "生物标记物名称",
@@ -155,6 +157,7 @@ CREATE TABLE IF NOT EXISTS compounds (
     target_category VARCHAR(160) NOT NULL COMMENT '目标类别',
     substance_category VARCHAR(180) NOT NULL COMMENT '目标物质类别',
     substance_subclass VARCHAR(180) DEFAULT NULL COMMENT '目标物质子类',
+    substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类',
     drug_name VARCHAR(300) NOT NULL,
     indications LONGTEXT,
     prescription_type ENUM('处方药','非处方药','其他') DEFAULT NULL COMMENT '处方/非处方',
@@ -256,6 +259,7 @@ CREATE TABLE IF NOT EXISTS home_target_records (
     target_group VARCHAR(20) NOT NULL COMMENT '首页目标组: drug/consumer',
     substance_category VARCHAR(180) NOT NULL COMMENT '目标物质类别',
     substance_subclass VARCHAR(180) NOT NULL COMMENT '目标物质子类',
+    substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类',
     biomarker_name VARCHAR(300) NOT NULL COMMENT '生物标记物名称',
     source_sheet VARCHAR(64) NOT NULL DEFAULT '数据表',
     source_row_number INT NOT NULL COMMENT 'Excel 原始行号',
@@ -273,6 +277,7 @@ CREATE TABLE IF NOT EXISTS icd11_sankey_paths (
     target_category VARCHAR(160) NOT NULL COMMENT '目标类别',
     substance_category VARCHAR(180) NOT NULL COMMENT '目标物质类别',
     substance_subclass VARCHAR(180) NOT NULL COMMENT '目标物质子类',
+    substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类',
     drug_name VARCHAR(300) NOT NULL COMMENT '药物名称',
     indication_original TEXT COMMENT '适应症原文',
     biomarker_name VARCHAR(300) NOT NULL COMMENT '生物标记物名称',
@@ -355,6 +360,9 @@ CREATE TABLE IF NOT EXISTS map_pndl_stats (
     KEY idx_map_value (pndl_geomean_mg_d_1000inh)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化PNDL预聚合表';
 
+ALTER TABLE compounds ADD COLUMN IF NOT EXISTS substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类';
+ALTER TABLE home_target_records ADD COLUMN IF NOT EXISTS substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类';
+ALTER TABLE icd11_sankey_paths ADD COLUMN IF NOT EXISTS substance_fine VARCHAR(180) DEFAULT NULL COMMENT '目标物质细类';
 ALTER TABLE compounds
     MODIFY target_category VARCHAR(160) NOT NULL COMMENT '目标类别',
     MODIFY substance_category VARCHAR(180) NOT NULL COMMENT '目标物质类别',
@@ -673,6 +681,7 @@ def write_compounds(handle, rows: Iterable[dict[str, str]], batch_size: int) -> 
         "target_category",
         "substance_category",
         "substance_subclass",
+        "substance_fine",
         "drug_name",
         "indications",
         "prescription_type",
@@ -699,6 +708,7 @@ def write_compounds(handle, rows: Iterable[dict[str, str]], batch_size: int) -> 
                 sql_string(first_useful(data.get("目标类别"), "NA")),
                 sql_string(first_useful(data.get("目标物质类别"), "NA")),
                 sql_string(clean(data.get("目标物质子类")) or None),
+                sql_string(clean(data.get("目标物质细类")) or None),
                 sql_string(drug_name),
                 sql_string(clean(data.get("适应症")) or None),
                 sql_string(prescription if prescription in PRESCRIPTION_TYPES else None),
@@ -888,6 +898,7 @@ def write_home_records(handle, data: WorkbookData, batch_size: int) -> None:
         "target_group",
         "substance_category",
         "substance_subclass",
+        "substance_fine",
         "biomarker_name",
         "source_sheet",
         "source_row_number",
@@ -913,6 +924,7 @@ def write_home_records(handle, data: WorkbookData, batch_size: int) -> None:
                 sql_string(target_group(target_category)),
                 sql_string(substance_category),
                 sql_string(substance_subclass),
+                sql_string(clean(row.get("目标物质细类")) or None),
                 sql_string(biomarker_name),
                 sql_string(DATA_SHEET),
                 str(row_number),
@@ -927,6 +939,7 @@ def write_icd11_paths(handle, rows: list[dict[str, str]], batch_size: int) -> No
         "target_category",
         "substance_category",
         "substance_subclass",
+        "substance_fine",
         "drug_name",
         "indication_original",
         "biomarker_name",
@@ -954,6 +967,7 @@ def write_icd11_paths(handle, rows: list[dict[str, str]], batch_size: int) -> No
                 sql_string(row["目标类别"]),
                 sql_string(row["目标物质类别"]),
                 sql_string(row["目标物质子类"] or "未分类"),
+                sql_string(row["目标物质细类"] or None),
                 sql_string(row["药物"]),
                 sql_string(row["适应症原文"] or None),
                 sql_string(row["生物标记物名称"]),

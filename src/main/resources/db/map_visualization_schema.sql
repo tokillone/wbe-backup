@@ -88,6 +88,20 @@ CREATE TABLE IF NOT EXISTS geo_locations (
     KEY idx_geo_names (country, province, city)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地图可视化地理维表';
 
+CREATE TABLE IF NOT EXISTS geo_location_aliases (
+    alias_id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    level VARCHAR(16) NOT NULL,
+    country_key VARCHAR(180) NOT NULL,
+    alias_key VARCHAR(180) NOT NULL,
+    geo_key VARCHAR(180) NOT NULL,
+    source VARCHAR(80) NOT NULL,
+    source_version INT NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_geo_alias (level, country_key, alias_key),
+    KEY idx_geo_alias_target (level, geo_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地理维表别名映射';
+
 CREATE TABLE IF NOT EXISTS map_pndl_stats (
     stat_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     level VARCHAR(16) NOT NULL,

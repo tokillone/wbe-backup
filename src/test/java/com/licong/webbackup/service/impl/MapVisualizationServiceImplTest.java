@@ -3,6 +3,7 @@ package com.licong.webbackup.service.impl;
 import com.licong.webbackup.dto.map.MapFilterResponse;
 import com.licong.webbackup.dto.map.MapFilterRow;
 import com.licong.webbackup.dto.map.MapDetailResponse;
+import com.licong.webbackup.dto.map.MapMetricObservationRow;
 import com.licong.webbackup.dto.map.MapRegionStatResponse;
 import com.licong.webbackup.dto.map.MapSourceRecordResponse;
 import com.licong.webbackup.dto.map.MapStatsResponse;
@@ -14,7 +15,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -47,6 +50,35 @@ class MapVisualizationServiceImplTest {
     }
 
     @Test
+    void biomarkerPathsDeduplicateYearsExcludeAllAndKeepDuplicateMarkersOnDifferentPaths() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        when(mapper.findFilterRows()).thenReturn(List.of(
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "COTININE", "可替宁", "486-56-6", "2023"),
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "COTININE", "可替宁", "486-56-6", "2024"),
+                filterRow("人体暴露类", "生物标记物", "烟草暴露",
+                        "COTININE", "可替宁", "486-56-6", "2024"),
+                filterRow("消费/生活方式类", "烟草使用标志物", "尼古丁及代谢物",
+                        "ALL", "全部 biomarker", null, "全部年份")));
+
+        MapFilterResponse filters = new MapVisualizationServiceImpl(mapper).getFilters();
+
+        assertThat(filters.getBiomarkerPaths()).hasSize(2);
+        assertThat(filters.getBiomarkerPaths())
+                .allSatisfy(path -> {
+                    assertThat(path.getBiomarkerKey()).isEqualTo("COTININE");
+                    assertThat(path.getBiomarkerLabel()).isEqualTo("可替宁");
+                    assertThat(path.getBiomarkerCas()).isEqualTo("486-56-6");
+                });
+        assertThat(filters.getBiomarkerPaths())
+                .extracting(path -> path.getTargetClass() + "|" + path.getCategory() + "|" + path.getSubcategory())
+                .containsExactlyInAnyOrder(
+                        "消费/生活方式类|烟草使用标志物|尼古丁及代谢物",
+                        "人体暴露类|生物标记物|烟草暴露");
+    }
+
+    @Test
     void allCategoryStatsUseExactAggregateWhenAvailable() {
         MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
         MapRegionStatResponse exact = stat(
@@ -73,6 +105,35 @@ class MapVisualizationServiceImplTest {
         assertThat(stats.getRegions()).containsExactly(exact);
         assertThat(stats.getPoints()).containsExactly(exact);
         verify(mapper, never()).findStatsForAnyCategory(any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).countStatsRows();
+        verify(mapper, never()).countPositivePndlRows();
+        verify(mapper, never()).countConvertiblePndlRows();
+        verify(mapper, never()).countMappablePndlRows();
+        verify(mapper, never()).countMappableGeoLocations();
+    }
+
+    @Test
+    void statsKeepCountryAdmin1AndCityRowsUnderTheSameMarkerFilter() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        List<MapRegionStatResponse> hierarchy = List.of(
+                stat("country", "china", "中国", "抗生素", "大环内酯", "AZITHROMYCIN", "20", 10),
+                stat("admin1", "china|zhejiang", "浙江省", "抗生素", "大环内酯", "AZITHROMYCIN", "18", 8),
+                stat("city", "china|zhejiang|ningbo", "宁波市", "抗生素", "大环内酯", "AZITHROMYCIN", "16", 5)
+        );
+        when(mapper.findStats(
+                eq("抗生素"), eq("药物类"), eq("大环内酯"), eq("AZITHROMYCIN"),
+                eq("2023"), eq(List.of("country", "admin1", "city"))))
+                .thenReturn(hierarchy);
+
+        MapStatsResponse response = new MapVisualizationServiceImpl(mapper).getStats(
+                "药物类", "抗生素", "大环内酯", "AZITHROMYCIN", "2023", null);
+
+        assertThat(response.getRegions())
+                .extracting(MapRegionStatResponse::getLevel)
+                .containsExactly("country", "admin1", "city");
+        assertThat(response.getRegions())
+                .extracting(MapRegionStatResponse::getBiomarkerKey)
+                .containsOnly("AZITHROMYCIN");
     }
 
     @Test
@@ -332,6 +393,130 @@ class MapVisualizationServiceImplTest {
         });
     }
 
+    @Test
+    void cityDetailIncludesPndlComparisonsAndSameUnitAnnualMedianTrend() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse ningbo = stat(
+                "city", "china|zhejiang|ningbo", "宁波市",
+                "抗生素", "大环内酯", "AZITHROMYCIN", "16", 5);
+        ningbo.setParentGeoKey("china|zhejiang");
+        ningbo.setCountry("China");
+        when(mapper.findRegion(
+                eq("city"), eq("china|zhejiang|ningbo"), eq("抗生素"), eq("药物类"),
+                eq("大环内酯"), eq("AZITHROMYCIN"), eq("全部年份")))
+                .thenReturn(ningbo);
+        when(mapper.findRankingStats(
+                eq("city"), eq("抗生素"), eq("药物类"), eq("大环内酯"),
+                eq("AZITHROMYCIN"), eq("全部年份"), anyInt()))
+                .thenReturn(List.of(ningbo));
+        when(mapper.findComparisonStatsByScope(
+                any(), any(), any(), eq("抗生素"), eq("药物类"), eq("大环内酯"),
+                eq("AZITHROMYCIN"), eq("全部年份"), anyInt()))
+                .thenAnswer(invocation -> {
+                    String level = invocation.getArgument(0);
+                    return "country".equals(level)
+                            ? List.of(stat(
+                                    "country", "china", "中国", "抗生素", "大环内酯",
+                                    "AZITHROMYCIN", "20", 10))
+                            : List.of(ningbo);
+                });
+        MapMetricObservationRow observation2022 = metricObservation(2022, "12");
+        MapMetricObservationRow observation2023 = metricObservation(2023, "18");
+        when(mapper.findMetricObservations(
+                eq("city"), eq("china|zhejiang|ningbo"), eq("抗生素"), eq("药物类"),
+                eq("大环内酯"), eq("AZITHROMYCIN")))
+                .thenReturn(List.of(observation2022, observation2023));
+
+        MapDetailResponse detail = new MapVisualizationServiceImpl(mapper).getDetail(
+                "city", "china|zhejiang|ningbo", "药物类", "抗生素",
+                "大环内酯", "AZITHROMYCIN", "全部年份");
+
+        assertThat(detail.getRegion()).isSameAs(ningbo);
+        assertThat(detail.getPndlRanking()).singleElement()
+                .satisfies(row -> assertThat(row.getSelected()).isTrue());
+        assertThat(detail.getPndlComparisons())
+                .extracting(comparison -> comparison.getKey())
+                .contains("city", "parent-city", "country");
+        assertThat(detail.getTrendSeries()).singleElement().satisfies(series -> {
+            assertThat(series.getMetricKey()).isEqualTo("pndl");
+            assertThat(series.getUnit()).isEqualTo("mg/day/1000 inh");
+            assertThat(series.getPoints())
+                    .extracting(point -> point.getYear())
+                    .containsExactly(2022, 2023);
+        });
+    }
+
+    @Test
+    void unassignedAdmin1DetailUsesOnlyItsParentCountryComparison() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse unassigned = stat(
+                "admin1", "unitedsofamerica|__unassigned__", "UNASSIGNED_ADMIN1",
+                "健康状态类", "内源性激素", "CORTISOL", "114", 13);
+        unassigned.setParentGeoKey("unitedsofamerica");
+        unassigned.setCountry("United States of America");
+        MapRegionStatResponse country = stat(
+                "country", "unitedsofamerica", "United States of America",
+                "健康状态类", "内源性激素", "CORTISOL", "120", 20);
+
+        when(mapper.findRegion(
+                eq("admin1"), eq("unitedsofamerica|__unassigned__"),
+                eq("健康状态类"), eq("健康状态类"), eq("内源性激素"),
+                eq("CORTISOL"), eq("全部年份")))
+                .thenReturn(unassigned);
+        when(mapper.findComparisonStatsByScope(
+                eq("country"), any(), any(), eq("健康状态类"), eq("健康状态类"),
+                eq("内源性激素"), eq("CORTISOL"), eq("全部年份"), anyInt()))
+                .thenReturn(List.of(country));
+
+        MapDetailResponse detail = new MapVisualizationServiceImpl(mapper).getDetail(
+                "admin1", "unitedsofamerica|__unassigned__", "健康状态类", "健康状态类",
+                "内源性激素", "CORTISOL", "全部年份");
+
+        assertThat(detail.getPndlComparisons()).singleElement().satisfies(comparison -> {
+            assertThat(comparison.getKey()).isEqualTo("country");
+            assertThat(comparison.getScopeLevel()).isEqualTo("country");
+            assertThat(comparison.getSelectedRegionId()).isEqualTo("country|unitedsofamerica");
+        });
+        verify(mapper, never()).findComparisonStatsByScope(
+                eq("admin1"), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void unassignedCityDetailUsesOnlyItsParentAdminComparison() {
+        MapVisualizationMapper mapper = mock(MapVisualizationMapper.class);
+        MapRegionStatResponse unassigned = stat(
+                "city", "china|qinghai|__unassigned__", "UNASSIGNED_CITY",
+                "N02 镇痛药", "N02A", "76573", "6", 6);
+        unassigned.setParentGeoKey("china|qinghai");
+        unassigned.setCountry("China");
+        unassigned.setProvince("青海省");
+        MapRegionStatResponse qinghai = stat(
+                "admin1", "china|qinghai", "青海省",
+                "N02 镇痛药", "N02A", "76573", "17", 17);
+
+        when(mapper.findRegion(
+                eq("city"), eq("china|qinghai|__unassigned__"),
+                eq("N 神经系统药物"), eq("N 神经系统药物"), eq("N02 镇痛药"),
+                eq("N02A"), eq("76573")))
+                .thenReturn(unassigned);
+        when(mapper.findComparisonStatsByScope(
+                eq("admin1"), eq("china"), isNull(), eq("N 神经系统药物"),
+                eq("N 神经系统药物"), eq("N02 镇痛药"), eq("N02A"), eq("76573"), anyInt()))
+                .thenReturn(List.of(qinghai));
+
+        MapDetailResponse detail = new MapVisualizationServiceImpl(mapper).getDetail(
+                "city", "china|qinghai|__unassigned__", "N 神经系统药物",
+                "N 神经系统药物", "N02 镇痛药", "N02A", "76573");
+
+        assertThat(detail.getPndlComparisons()).singleElement().satisfies(comparison -> {
+            assertThat(comparison.getKey()).isEqualTo("admin1");
+            assertThat(comparison.getScopeLevel()).isEqualTo("admin1");
+            assertThat(comparison.getSelectedRegionId()).isEqualTo("admin1|china|qinghai");
+        });
+        verify(mapper, never()).findComparisonStatsByScope(
+                eq("city"), any(), any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
     private MapFilterRow filterRow(String category) {
         MapFilterRow row = new MapFilterRow();
         row.setTargetClass("抗生素");
@@ -340,6 +525,30 @@ class MapVisualizationServiceImplTest {
         row.setBiomarkerKey("ALL");
         row.setBiomarkerLabel("全部 biomarker");
         row.setYearLabel("全部年份");
+        return row;
+    }
+
+    private MapFilterRow filterRow(String targetClass, String category, String subcategory,
+                                   String biomarkerKey, String biomarkerLabel, String biomarkerCas,
+                                   String year) {
+        MapFilterRow row = new MapFilterRow();
+        row.setTargetClass(targetClass);
+        row.setCategory(category);
+        row.setSubcategory(subcategory);
+        row.setBiomarkerKey(biomarkerKey);
+        row.setBiomarkerLabel(biomarkerLabel);
+        row.setBiomarkerCas(biomarkerCas);
+        row.setYearLabel(year);
+        return row;
+    }
+
+    private MapMetricObservationRow metricObservation(int year, String value) {
+        MapMetricObservationRow row = new MapMetricObservationRow();
+        row.setMetricKey("pndl");
+        row.setMetricLabel("PNDL");
+        row.setUnit("mg/day/1000 inh");
+        row.setYear(year);
+        row.setValue(new BigDecimal(value));
         return row;
     }
 

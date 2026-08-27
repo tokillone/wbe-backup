@@ -1,5 +1,9 @@
 server:
   port: 8080  # 服务端口
+  compression:
+    enabled: true
+    min-response-size: 1KB
+    mime-types: application/json
 
 spring:
   datasource:
@@ -7,10 +11,28 @@ spring:
     username: root
     password:
     driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
+      timeout: ${REDIS_TIMEOUT:2s}
   servlet:
     multipart:
       max-file-size: 50MB
       max-request-size: 60MB
+
+wbe:
+  storage:
+    # 开发环境默认沿用原目录；Docker 中设置 WBE_UPLOAD_DIR=/data/wbe/uploads。
+    upload-dir: ${WBE_UPLOAD_DIR:${user.dir}/uploads/data}
+    max-file-size: 50MB
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+      - http://127.0.0.1:5173
 
 mybatis:
   configuration:

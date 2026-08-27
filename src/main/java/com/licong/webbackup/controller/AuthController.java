@@ -54,7 +54,7 @@ public class AuthController {
 
     @PostMapping("/login")
     public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest request, HttpServletRequest servletRequest) {
-        String ipAddress = resolveClientIp(servletRequest);
+        String ipAddress = servletRequest.getRemoteAddr();
         String userAgent = servletRequest.getHeader("User-Agent");
         return ApiResponse.success("登录成功", authService.login(request, ipAddress, userAgent));
     }
@@ -98,15 +98,4 @@ public class AuthController {
         return authorization.trim();
     }
 
-    private String resolveClientIp(HttpServletRequest request) {
-        String forwardedFor = request.getHeader("X-Forwarded-For");
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            return forwardedFor.split(",")[0].trim();
-        }
-        String realIp = request.getHeader("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp;
-        }
-        return request.getRemoteAddr();
-    }
 }

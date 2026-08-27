@@ -11,6 +11,8 @@ import java.util.Map;
 public class DataUploadRowResponse {
 
     private Long rowId;
+    private String rowStage;
+    private Long reviewPackageId;
     private String sheetName;
     private Integer excelRowNumber;
     private String status;
